@@ -1,0 +1,179 @@
+# on_the_fly3r collaboration baseline
+#
+# This repository tracks the on-the-fly multi-VFM reconstruction framework.
+# External model repositories, checkpoints, datasets, and generated artifacts
+# stay local and are documented in README/setup.sh instead.
+
+# Git metadata backups and local history experiments
+.git_backup/
+.git_backup*/
+
+# Accidental local output directory named a single space
+/\ /
+
+# External repositories cloned next to this project
+/Pi3/
+/reloc3r/
+/SupScene/
+/LightGlue/
+/map-anything/
+/salad/
+/vggt/
+/vggt-compressed/
+/vggt-omega/
+
+# Legacy SALAD retrieval wrapper
+/vggt_slam/
+
+# Local-only scripts not included in the on_the_fly3r GitHub baseline
+/main.py
+/run.bash
+/interframe_solver.py
+/rig_solver.py
+/eval_vis_pcd_traj.py
+/summary_geom.py
+/summary_traj.py
+/online_debug_viewer.py
+/evaluate_raw_model_poses.py
+/export_pi3_batch_frame_clouds.py
+/npz_to_ply.py
+/run_reloc3r_sequence_poses.py
+/batch_evaluate_runs.py
+/evaluate_pairwise_relative_pose.py
+/evaluate_point_cloud_metrics.py
+/evaluate_reloc3r_direction_graph.py
+/scripts/
+/tests/test_low_memory_exports.py
+/tests/test_pose_graph_refinement_and_debug.py
+/*.xlsx
+
+# Local notes, conversion helpers, and old figures kept off GitHub
+/docs/
+/dataset/
+/assets/
+
+# Datasets, logs, and generated reconstruction outputs
+/Data/
+/data/
+/dataset/
+/datasets/
+/dataset_cache/
+/Save/
+/Save*/
+/Not/
+/Old/
+/outputs/
+/output/
+/output*/
+/logs/
+/logs*/
+/debug/
+/debug*/
+/batch_debug/
+**/batch_debug/
+**/failed_validation_batches/
+**/failed_validation_batches.txt
+temp_images/
+.gradio/
+.hydra/
+
+# Model checkpoints, weights, caches, and large generated geometry
+ckpt/
+checkpoints/
+dependency/
+*.ckpt
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.npz
+*.npy
+*.ply
+*.pcd
+*.glb
+*.obj
+*.las
+*.laz
+
+# Runtime summaries/logs created under ignored output folders; source JSON is trackable
+*.log
+*.prof
+*.text
+
+# Python bytecode and native extension build outputs
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python packaging/build artifacts
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments and local interpreter/tool state
+.env
+.env.*
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+__pypackages__/
+.python-version
+
+# Test, coverage, and type-checker caches
+.cache/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+cover/
+
+# Notebook/editor/OS state
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.spyderproject
+.spyproject
+.ropeproject
+.DS_Store
+Thumbs.db
+
+# Documentation build output
+docs/_build/
+/site/
+
+# Temporary folders
+tmp/
+**/tmp/

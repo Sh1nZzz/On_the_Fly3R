@@ -1,0 +1,76 @@
+# Template for reproducible incremental reconstruction ablations.
+# Run one case with:
+#   python run_on_the_fly3r.py --config configs/incremental_ablation_template.yaml --case ab05_all_on
+
+default_case: ab05_all_on
+
+# Edit these first for each machine/dataset.
+editable:
+  image_dir: /data3/Datasets/GauU-SceneV2/HAV/colmap_metrics/images
+  output_root: /data2/sz/On-the-fly3R/test
+  output_dir: null
+  inference_device: cuda:3
+  retrieval_device: cuda:3
+  model_checkpoint: null
+  supscene_weights: null
+
+# All configurable run_on_the_fly3r.py parameters are explicit below.
+defaults:
+  model: Pi3x
+  init_window: 30
+  max_batch_size: 5
+  dynamic_batch_ref_overlap_min: 2
+  dynamic_batch_ref_overlap_ratio_min: 0.4
+  dynamic_batch_query_similarity_min: 0.75
+  dynamic_batch_dominant_refs: 5
+  retrieval_topk: 5
+  min_topk_for_alignment: 3
+  use_sky_mask: false
+  supscene_image_size: 322
+  enable_profiling_sync: false
+  enable_detailed_profiling: false
+  disable_retrieval_prefetch: false
+  retrieval_prefetch_count: 16
+  alignment_point_conf_threshold: 0.5
+  alignment_grid_topk_per_cell: 12
+  alignment_grid_conf_min: 0.5
+  alignment_compact_max_points: 5000
+  alignment_compact_grid_cell_size: null
+  disable_alignment_validation: false
+  validation_translation_spacing_multiplier: 50.0
+  validation_spacing_estimation_samples: 2048
+  validation_spacing_estimation_max_frames: 5
+  validation_median_rotation_deg_threshold: 10.0
+  validation_max_rotation_deg_threshold: 25.0
+  validation_scale_min: 0.5
+  validation_scale_max: 1.5
+  enable_register_ref_pruning_retry: false
+  register_ref_pruning_candidate_z: 2.0
+  register_ref_pruning_min_similarity: 0.0
+  register_ref_pruning_max_drop_refs: 1
+  register_ref_pruning_min_refs: 0
+  fusion_conf_threshold: 0.5
+  image_preprocess_cache_max_images: 1500
+  image_preprocess_prefetch_count: 20
+  image_preprocess_prefetch_workers: 1
+  enable_pose_graph_optimization: false
+  pose_opt_min_edges: 30
+  pose_opt_max_nfev: 15
+  save_ply: true
+  ply_export_mode: dedup
+  final_ply_dedup_voxel_multiplier: 1.0
+  disable_pose_export: false
+  seed: 0
+
+ablations:
+  ab02_dynamic_only:
+    validation_retry: false
+    pgo: false
+
+  ab04_dynamic_validation_retry:
+    validation_retry: true
+    pgo: false
+
+  ab05_all_on:
+    validation_retry: true
+    pgo: true

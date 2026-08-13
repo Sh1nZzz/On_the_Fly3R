@@ -1,0 +1,38 @@
+# Install PyTorch and TorchVision separately before this file.
+# Choose the command that matches your CUDA/CPU environment:
+# https://pytorch.org/get-started/locally/
+
+# Core numeric/image runtime.
+numpy>=1.26,<2
+numba
+Pillow
+tqdm
+
+# Image/model IO and utility libraries used by the on_the_fly3r runtime.
+opencv-python
+safetensors
+huggingface_hub
+requests
+einops
+omegaconf
+PyYAML
+plyfile
+matplotlib
+
+# Optional sky-mask path.
+onnxruntime
+
+# SupScene retrieval dependencies.
+torchmetrics
+peft
+timm
+
+# Viewer.
+viser>=0.2
+
+# Optimization / bundle-adjustment backends.
+gtsam-develop
+pycolmap
+
+# Build helper for compiled wheels/backends in fresh environments.
+cmake

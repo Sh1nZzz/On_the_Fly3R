@@ -1,4 +1,5 @@
 from concurrent.futures import Future, ThreadPoolExecutor
+import gc
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
@@ -100,15 +101,47 @@ class IncrementalReconstructor(RetrievalPlanningMixin, PreprocessingMixin, Align
             "bootstrap_time_sec": 0.0,
             "processing_time_sec": 0.0,
         }
+        self._shutdown = False
 
     def shutdown(self) -> None:
+        if self._shutdown:
+            return
+        self._shutdown = True
+
         self.shutdown_online_pose_graph_worker(wait=True)
-        self.runner.clear_image_preprocess_cache()
-        self.retrieval_manager.shutdown()
-        self._poll_image_preprocess_prefetch()
+
+        cuda_devices = {
+            str(getattr(self.runner, "device", self.config.inference_device)),
+            str(getattr(self.retrieval_encoder, "device", self.config.retrieval_device)),
+        }
         if self._image_preprocess_prefetch_executor is not None:
-            self._image_preprocess_prefetch_executor.shutdown(wait=False, cancel_futures=False)
+            self._image_preprocess_prefetch_executor.shutdown(wait=True, cancel_futures=True)
             self._image_preprocess_prefetch_executor = None
+        self._image_preprocess_prefetch_futures.clear()
+
+        self.retrieval_manager.shutdown(wait=True)
+        self.runner.clear_image_preprocess_cache()
+        self.runner.release_gpu_resources()
+
+        # Delete Python references before returning PyTorch's unused CUDA blocks
+        # to the driver. Reconstruction state and Viser playback data are NumPy/CPU.
+        gc.collect()
+        release_stats: Dict[str, Dict[str, int]] = {}
+        if torch.cuda.is_available():
+            for device_name in cuda_devices:
+                try:
+                    device = torch.device(device_name)
+                    if device.type != "cuda":
+                        continue
+                    with torch.cuda.device(device):
+                        torch.cuda.empty_cache()
+                        release_stats[str(device)] = {
+                            "allocated_bytes": int(torch.cuda.memory_allocated(device)),
+                            "reserved_bytes": int(torch.cuda.memory_reserved(device)),
+                        }
+                except (RuntimeError, ValueError):
+                    continue
+        self.runtime_stats["gpu_release"] = release_stats
 
 
     def bootstrap(self, image_paths: Sequence[str]) -> None:

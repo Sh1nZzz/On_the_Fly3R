@@ -86,6 +86,9 @@ class FrameIndex:
         values_np = values.detach().cpu().numpy()
         return [(self.frame_ids[int(i)], float(score)) for i, score in zip(indices_np, values_np)]
 
+    def release_gpu_resources(self) -> None:
+        self._feature_bank_torch = None
+
 
 class SupSceneRetrievalEncoder:
     """
@@ -149,6 +152,10 @@ class SupSceneRetrievalEncoder:
             descriptor = self.model(tensor)
         return descriptor.squeeze(0).detach().cpu().numpy().astype(np.float32, copy=False)
 
+    def release_gpu_resources(self) -> None:
+        """Drop the resident SupScene model after retrieval is complete."""
+        self.model = None
+
 def build_retrieval_encoder(config: ReconstructionConfig) -> SupSceneRetrievalEncoder:
     return SupSceneRetrievalEncoder(config)
 
@@ -197,10 +204,14 @@ class RetrievalManager:
                 image_path,
             )
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, wait: bool = True) -> None:
         if self.prefetch_executor is not None:
-            self.prefetch_executor.shutdown(wait=False, cancel_futures=False)
+            self.prefetch_executor.shutdown(wait=wait, cancel_futures=True)
             self.prefetch_executor = None
+        self.feature_futures.clear()
+        self.feature_cache.clear()
+        self.index.release_gpu_resources()
+        self.encoder.release_gpu_resources()
 
 
 class RetrievalPlanningMixin:

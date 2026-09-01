@@ -2,7 +2,7 @@ import argparse
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, RLock, Thread
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
@@ -17,6 +17,7 @@ from .config import (
 from .pipeline import IncrementalReconstructor
 from .types import FrameReconstruction
 from .utils import iter_image_paths, set_seed
+from .viewer_state import PlaybackState, cumulative_compute_time_sec, playback_slider_state
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--panel_width", type=str, default="large", choices=["small", "medium", "large"], help="Width of the control panel.")
     parser.add_argument("--viewer_max_bootstrap_points", type=int, default=200000, help="Maximum number of bootstrap points displayed in the viewer.")
     parser.add_argument("--viewer_max_points_per_batch", type=int, default=40000, help="Maximum number of points displayed per added batch in the viewer.")
+    parser.add_argument("--playback_fps", type=float, default=1.0, help="Default batch playback speed.")
+    parser.add_argument("--playback_loop", action="store_true", help="Loop batch playback after reaching the latest batch.")
     parser.add_argument("--sleep_after_finish_sec", type=float, default=0.5, help="Sleep interval while keeping the viewer alive after processing.")
     return parser
 
@@ -145,6 +148,7 @@ class BatchEvent:
     inference_time_sec: Optional[float]
     alignment_time_sec: Optional[float]
     fusion_time_sec: Optional[float]
+    total_time_sec: float
     diagnostics: Dict[str, object]
     validation: Optional[Dict[str, object]]
     formation: Optional[Dict[str, object]]
@@ -179,6 +183,9 @@ class TimelineState:
         self.latest_online_batch_idx = 0
         self.total_images = 0
         self.bootstrap_image_count = 0
+        self.bootstrap_point_count = 0
+        self.bootstrap_compute_time_sec = 0.0
+        self.finalization_compute_time_sec = 0.0
 
     def set_bootstrap(
         self,
@@ -190,11 +197,14 @@ class TimelineState:
         camera_poses: Sequence[np.ndarray],
         camera_intrinsics: Sequence[np.ndarray],
         camera_image_shapes: Sequence[tuple[int, int]],
+        compute_time_sec: float = 0.0,
     ) -> None:
         self.bootstrap_frame_ids = list(frame_ids)
         self.bootstrap_image_paths = list(image_paths)
         self.bootstrap_points = np.asarray(points, dtype=np.float32)
         self.bootstrap_colors = np.asarray(colors, dtype=np.uint8)
+        self.bootstrap_point_count = int(self.bootstrap_points.shape[0])
+        self.bootstrap_compute_time_sec = max(0.0, float(compute_time_sec))
         self.bootstrap_camera_poses = [np.asarray(pose, dtype=np.float32) for pose in camera_poses]
         self.bootstrap_camera_intrinsics = [np.asarray(item, dtype=np.float32) for item in camera_intrinsics]
         self.bootstrap_camera_image_shapes = [(max(1, int(h)), max(1, int(w))) for h, w in camera_image_shapes]
@@ -205,7 +215,6 @@ class TimelineState:
     def append_event(self, event: BatchEvent) -> None:
         self.events.append(event)
         self.latest_online_batch_idx = max(self.latest_online_batch_idx, int(event.batch_idx))
-        self.display_batch_idx = self.latest_online_batch_idx
 
     def get_event(self, batch_idx: int) -> Optional[BatchEvent]:
         if batch_idx <= 0:
@@ -231,8 +240,23 @@ class TimelineState:
             processed += len(event.frame_ids)
         return processed
 
+    def get_compute_time_sec(self, batch_idx: Optional[int] = None) -> float:
+        target_idx = self.display_batch_idx if batch_idx is None else int(batch_idx)
+        return cumulative_compute_time_sec(
+            self.bootstrap_compute_time_sec,
+            ((event.batch_idx, event.total_time_sec) for event in self.events),
+            target_idx,
+            finalization_time_sec=self.finalization_compute_time_sec,
+            include_finalization=(
+                self.finalization_compute_time_sec > 0.0
+                and target_idx >= self.latest_online_batch_idx
+            ),
+        )
+
 
 class OnlineReconstructionViewer:
+    _DISPLAY_WXYZ = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+
     def __init__(self, timeline: TimelineState, args: argparse.Namespace) -> None:
         self.timeline = timeline
         self.args = args
@@ -242,11 +266,7 @@ class OnlineReconstructionViewer:
         # Keep reconstruction data unchanged; all point clouds and camera frustums
         # live under /world, so a parent-frame transform preserves alignment.
         self.server.scene.set_up_direction("+z")
-        self.server.scene.add_frame(
-            "/world",
-            show_axes=False,
-            wxyz=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64),  # 180 deg around X
-        )
+        self._add_world_frame()
         try:
             self.server.gui.configure_theme(
                 titlebar_content=None,
@@ -259,23 +279,36 @@ class OnlineReconstructionViewer:
                 control_layout="collapsible",
             )
 
-        self._lock = Lock()
+        self._lock = RLock()
         self._bootstrap_points_handle = None
         self._bootstrap_camera_handles: List[object] = []
         self._batch_point_handles: Dict[int, object] = {}
-        self._batch_base_colors: Dict[int, np.ndarray] = {}
-        self._batch_highlight_colors: Dict[int, np.ndarray] = {}
         self._batch_camera_handles: Dict[int, List[object]] = {}
         self._query_highlight_handles: List[object] = []
         self._reference_highlight_handles: List[object] = []
+        self.playback_state = PlaybackState(
+            loop_enabled=bool(getattr(args, "playback_loop", False)),
+        )
+        self._playback_fps = max(0.1, float(getattr(args, "playback_fps", 1.0)))
+        self._suppress_timeline_callback = False
+        self._has_initialized_view = False
         self._placeholder_image = _make_placeholder_image()
         self._run_start_time = time.perf_counter()
         self._run_end_time: Optional[float] = None
+        self._reconstruction_gpu_released = False
         self._shutdown_event = Event()
 
         self._build_gui()
+        self.server.on_client_connect(self._on_client_connect)
         self._status_thread = Thread(target=self._status_loop, daemon=True)
         self._status_thread.start()
+
+    def _add_world_frame(self) -> None:
+        self.server.scene.add_frame(
+            "/world",
+            show_axes=False,
+            wxyz=self._DISPLAY_WXYZ,
+        )
 
     def _build_gui(self) -> None:
         with self.server.gui.add_folder("Display", expand_by_default=True):
@@ -287,6 +320,46 @@ class OnlineReconstructionViewer:
                 "Show Current Highlights",
                 initial_value=True,
             )
+
+        with self.server.gui.add_folder("Playback", expand_by_default=True):
+            self.play_pause_handle = self.server.gui.add_button("Play / Pause", color="blue")
+            self.timeline_handle = self.server.gui.add_slider(
+                "Timeline",
+                min=0,
+                # Viser's web slider can display NaN when min == max. Keep a
+                # non-zero range while disabling the control until Batch 1 exists.
+                max=1,
+                step=1,
+                initial_value=0,
+                disabled=True,
+            )
+            self.navigation_handle = self.server.gui.add_button_group(
+                "Navigate",
+                options=("First", "Prev", "Next", "Live"),
+            )
+            self.playback_fps_handle = self.server.gui.add_slider(
+                "Batch / second",
+                min=0.25,
+                max=5.0,
+                step=0.25,
+                initial_value=self._playback_fps,
+            )
+            self.loop_playback_handle = self.server.gui.add_checkbox(
+                "Loop",
+                initial_value=self.playback_state.loop_enabled,
+            )
+            self.follow_live_handle = self.server.gui.add_checkbox(
+                "Follow Live",
+                initial_value=True,
+            )
+            self.playback_status_handle = self.server.gui.add_markdown(
+                "**Viewing:** bootstrap (Batch 0/0)"
+            )
+
+        with self.server.gui.add_folder("View", expand_by_default=True):
+            self.overview_view_handle = self.server.gui.add_button("Overview")
+            self.top_view_handle = self.server.gui.add_button("Top")
+            self.current_batch_view_handle = self.server.gui.add_button("Current Batch")
 
         with self.server.gui.add_folder("Status", expand_by_default=True):
             self.summary_markdown_handle = self.server.gui.add_markdown("Waiting for bootstrap...")
@@ -312,6 +385,87 @@ class OnlineReconstructionViewer:
             with self._lock:
                 self.render_at(self.timeline.display_batch_idx)
 
+        @self.play_pause_handle.on_click
+        def _(_) -> None:
+            with self._lock:
+                if self.playback_state.is_playing:
+                    self.playback_state.is_playing = False
+                else:
+                    target_idx = self.playback_state.start(
+                        self.timeline.display_batch_idx,
+                        self.timeline.latest_online_batch_idx,
+                    )
+                    if target_idx != self.timeline.display_batch_idx:
+                        self.render_at(target_idx)
+                self._sync_playback_gui()
+
+        @self.timeline_handle.on_update
+        def _(_) -> None:
+            with self._lock:
+                if self._suppress_timeline_callback:
+                    return
+                target_idx = self.playback_state.select(
+                    int(self.timeline_handle.value),
+                    self.timeline.latest_online_batch_idx,
+                )
+                self.render_at(target_idx)
+                self._sync_playback_gui()
+
+        @self.navigation_handle.on_click
+        def _(_) -> None:
+            with self._lock:
+                action = str(self.navigation_handle.value)
+                current_idx = int(self.timeline.display_batch_idx)
+                latest_idx = int(self.timeline.latest_online_batch_idx)
+                if action == "Live":
+                    target_idx = self.playback_state.go_live(latest_idx)
+                elif action == "First":
+                    target_idx = self.playback_state.select(0, latest_idx)
+                elif action == "Prev":
+                    target_idx = self.playback_state.select(current_idx - 1, latest_idx)
+                else:
+                    target_idx = self.playback_state.select(current_idx + 1, latest_idx)
+                self.render_at(target_idx)
+                self._sync_playback_gui()
+
+        @self.playback_fps_handle.on_update
+        def _(_) -> None:
+            with self._lock:
+                self._playback_fps = max(0.1, float(self.playback_fps_handle.value))
+
+        @self.loop_playback_handle.on_update
+        def _(_) -> None:
+            with self._lock:
+                self.playback_state.loop_enabled = bool(self.loop_playback_handle.value)
+
+        @self.follow_live_handle.on_update
+        def _(_) -> None:
+            with self._lock:
+                if self._suppress_timeline_callback:
+                    return
+                if bool(self.follow_live_handle.value):
+                    target_idx = self.playback_state.go_live(
+                        self.timeline.latest_online_batch_idx
+                    )
+                    self.render_at(target_idx)
+                else:
+                    self.playback_state.follow_live = False
+                self._sync_playback_gui()
+
+        @self.overview_view_handle.on_click
+        def _(event) -> None:
+            self._apply_view_action("Overview", event.client)
+
+        @self.top_view_handle.on_click
+        def _(event) -> None:
+            self._apply_view_action("Top", event.client)
+
+        @self.current_batch_view_handle.on_click
+        def _(event) -> None:
+            self._apply_view_action("Current Batch", event.client)
+
+        self._sync_playback_gui()
+
 
     def initialize_bootstrap(self) -> None:
         with self._lock:
@@ -328,6 +482,8 @@ class OnlineReconstructionViewer:
                 point_shape="circle",
                 visible=True,
             )
+            self.timeline.bootstrap_points = np.empty((0, 3), dtype=np.float32)
+            self.timeline.bootstrap_colors = np.empty((0, 3), dtype=np.uint8)
             self._bootstrap_camera_handles = self._create_camera_handles(
                 prefix="/world/bootstrap/cameras",
                 frame_ids=self.timeline.bootstrap_frame_ids,
@@ -339,6 +495,10 @@ class OnlineReconstructionViewer:
                 visible=bool(self.show_history_cameras_handle.value),
             )
             self.render_at(0)
+            self._sync_playback_gui()
+            if not self._has_initialized_view:
+                self._set_overview_for_clients()
+                self._has_initialized_view = True
 
     def append_event(self, event: BatchEvent) -> None:
         with self._lock:
@@ -346,10 +506,8 @@ class OnlineReconstructionViewer:
                 display_points, display_colors = _downsample_points(
                     event.added_points,
                     event.added_colors,
-                    min(self.args.viewer_max_points_per_batch, 40000),
+                    self.args.viewer_max_points_per_batch,
                 )
-                self._batch_base_colors[event.batch_idx] = display_colors
-                self._batch_highlight_colors[event.batch_idx] = display_colors
                 self._batch_point_handles[event.batch_idx] = self.server.scene.add_point_cloud(
                     f"/world/history/batch_{event.batch_idx:04d}/points",
                     points=display_points,
@@ -358,6 +516,7 @@ class OnlineReconstructionViewer:
                     point_shape="circle",
                     visible=False,
                 )
+            if event.status == "added":
                 self._batch_camera_handles[event.batch_idx] = self._create_camera_handles(
                     prefix=f"/world/history/batch_{event.batch_idx:04d}/cameras",
                     frame_ids=event.frame_ids,
@@ -368,12 +527,34 @@ class OnlineReconstructionViewer:
                     scale=float(self.args.frustum_scale),
                     visible=False,
                 )
-            self.render_at(self.timeline.latest_online_batch_idx)
+            # The reconstructor keeps the complete global point cloud. The event only
+            # needs metadata after its downsampled Viser handle has been created.
+            event.added_points = None
+            event.added_colors = None
+            target_idx = self.playback_state.on_latest_changed(
+                self.timeline.display_batch_idx,
+                self.timeline.latest_online_batch_idx,
+            )
+            self.render_at(target_idx)
+            self._sync_playback_gui()
 
-    def mark_finished(self) -> None:
+    def mark_finished(self, *, finalization_compute_time_sec: float = 0.0) -> None:
         with self._lock:
+            self.timeline.finalization_compute_time_sec = max(
+                0.0,
+                float(finalization_compute_time_sec),
+            )
             if self._run_end_time is None:
                 self._run_end_time = time.perf_counter()
+            self._update_summary_panel(
+                batch_idx=self.timeline.display_batch_idx,
+                event=self.timeline.get_event(self.timeline.display_batch_idx),
+            )
+            self._sync_playback_gui()
+
+    def mark_reconstruction_gpu_released(self) -> None:
+        with self._lock:
+            self._reconstruction_gpu_released = True
             self._update_summary_panel(
                 batch_idx=self.timeline.display_batch_idx,
                 event=self.timeline.get_event(self.timeline.display_batch_idx),
@@ -388,47 +569,21 @@ class OnlineReconstructionViewer:
 
         for event in self.timeline.iter_visible_added_events(self.timeline.latest_online_batch_idx):
             point_handle = self._batch_point_handles.get(event.batch_idx)
-            if point_handle is None:
-                continue
             visible = event.batch_idx <= batch_idx
-            point_handle.visible = visible
-            point_handle.colors = (
-                self._batch_highlight_colors[event.batch_idx]
-                if event.batch_idx == batch_idx
-                else self._batch_base_colors[event.batch_idx]
-            )
+            if point_handle is not None:
+                point_handle.visible = visible
             for frustum_handle in self._batch_camera_handles.get(event.batch_idx, []):
                 frustum_handle.visible = visible and bool(self.show_history_cameras_handle.value)
 
         for frustum_handle in self._bootstrap_camera_handles:
             frustum_handle.visible = bool(self.show_history_cameras_handle.value)
 
-        self._clear_highlights()
         event = self.timeline.get_event(batch_idx)
-        if event is not None and bool(self.show_highlights_handle.value):
-            self._query_highlight_handles = self._create_camera_handles(
-                prefix="/world/highlight/query",
-                frame_ids=event.frame_ids,
-                poses=event.current_query_poses,
-                intrinsics=event.current_query_intrinsics,
-                image_shapes=event.current_query_image_shapes,
-                color=tuple(int(v) for v in self.args.query_color),
-                scale=float(self.args.frustum_scale) * 1.1,
-                visible=True,
-            )
-            self._reference_highlight_handles = self._create_camera_handles(
-                prefix="/world/highlight/reference",
-                frame_ids=event.selected_reference_frame_ids,
-                poses=event.current_reference_poses,
-                intrinsics=event.current_reference_intrinsics,
-                image_shapes=event.current_reference_image_shapes,
-                color=tuple(int(v) for v in self.args.reference_color),
-                scale=float(self.args.frustum_scale) * 1.1,
-                visible=True,
-            )
+        self._update_highlight_pool(event)
 
         self._update_summary_panel(batch_idx=batch_idx, event=event)
         self._update_image_panel(event)
+        self._sync_playback_gui()
 
     def _create_camera_handles(
         self,
@@ -457,26 +612,327 @@ class OnlineReconstructionViewer:
                 color=color,
                 visible=visible,
             )
+            self._attach_frustum_click(frustum)
             handles.append(frustum)
         return handles
 
-    def _clear_highlights(self) -> None:
-        for handle in self._query_highlight_handles:
-            handle.remove()
-        for handle in self._reference_highlight_handles:
-            handle.remove()
-        self._query_highlight_handles = []
-        self._reference_highlight_handles = []
+    def _ensure_highlight_pool(
+        self,
+        handles: List[object],
+        *,
+        count: int,
+        prefix: str,
+        color: tuple[int, int, int],
+    ) -> None:
+        while len(handles) < int(count):
+            idx = len(handles)
+            frustum = self.server.scene.add_camera_frustum(
+                f"{prefix}/{idx}",
+                fov=1.0,
+                aspect=1.0,
+                scale=float(self.args.frustum_scale) * 1.1,
+                line_width=2.0,
+                color=color,
+                visible=False,
+            )
+            self._attach_frustum_click(frustum)
+            handles.append(frustum)
+
+    def _assign_highlight_pool(
+        self,
+        handles: List[object],
+        *,
+        poses: Sequence[np.ndarray],
+        intrinsics: Sequence[np.ndarray],
+        image_shapes: Sequence[tuple[int, int]],
+        visible: bool,
+    ) -> None:
+        for idx, handle in enumerate(handles):
+            if idx >= len(poses) or idx >= len(intrinsics) or idx >= len(image_shapes):
+                handle.visible = False
+                continue
+            wxyz, position = _to_viser_pose(np.asarray(poses[idx], dtype=np.float32))
+            height, width = image_shapes[idx]
+            handle.wxyz = wxyz
+            handle.position = position
+            handle.fov = _compute_camera_fov(
+                (max(1, int(height)), max(1, int(width))),
+                np.asarray(intrinsics[idx]),
+            )
+            handle.aspect = float(max(1, int(width))) / float(max(1, int(height)))
+            handle.visible = bool(visible)
+
+    def _update_highlight_pool(self, event: Optional[BatchEvent]) -> None:
+        show = event is not None and bool(self.show_highlights_handle.value)
+        if event is not None:
+            self._ensure_highlight_pool(
+                self._query_highlight_handles,
+                count=len(event.current_query_poses),
+                prefix="/world/highlight/query",
+                color=tuple(int(v) for v in self.args.query_color),
+            )
+            self._ensure_highlight_pool(
+                self._reference_highlight_handles,
+                count=len(event.current_reference_poses),
+                prefix="/world/highlight/reference",
+                color=tuple(int(v) for v in self.args.reference_color),
+            )
+        self._assign_highlight_pool(
+            self._query_highlight_handles,
+            poses=[] if event is None else event.current_query_poses,
+            intrinsics=[] if event is None else event.current_query_intrinsics,
+            image_shapes=[] if event is None else event.current_query_image_shapes,
+            visible=show,
+        )
+        self._assign_highlight_pool(
+            self._reference_highlight_handles,
+            poses=[] if event is None else event.current_reference_poses,
+            intrinsics=[] if event is None else event.current_reference_intrinsics,
+            image_shapes=[] if event is None else event.current_reference_image_shapes,
+            visible=show,
+        )
+
+    def _sync_playback_gui(self, *, update_timeline_value: bool = True) -> None:
+        latest_idx = max(0, int(self.timeline.latest_online_batch_idx))
+        display_idx = int(max(0, min(self.timeline.display_batch_idx, latest_idx)))
+        slider_max, slider_disabled = playback_slider_state(latest_idx)
+        self._suppress_timeline_callback = True
+        try:
+            self.timeline_handle.max = slider_max
+            self.timeline_handle.disabled = slider_disabled
+            if update_timeline_value and int(self.timeline_handle.value) != display_idx:
+                self.timeline_handle.value = display_idx
+            if bool(self.follow_live_handle.value) != self.playback_state.follow_live:
+                self.follow_live_handle.value = self.playback_state.follow_live
+            if bool(self.loop_playback_handle.value) != self.playback_state.loop_enabled:
+                self.loop_playback_handle.value = self.playback_state.loop_enabled
+        finally:
+            self._suppress_timeline_callback = False
+
+        if self.playback_state.is_playing:
+            mode = "PLAYING"
+        elif self.playback_state.follow_live and self._run_end_time is None:
+            mode = "LIVE"
+        elif display_idx < latest_idx:
+            mode = "REVIEWING"
+        elif self._run_end_time is not None:
+            mode = "FINISHED"
+        else:
+            mode = "PAUSED"
+        stage = "bootstrap" if display_idx == 0 else f"Batch {display_idx}"
+        self.playback_status_handle.content = (
+            f"**{mode}** · Viewing {stage}/{latest_idx}\n\n"
+            f"- Follow Live: {'On' if self.playback_state.follow_live else 'Off'}\n"
+            f"- Playback: {'Playing' if self.playback_state.is_playing else 'Paused'}"
+        )
+
+    def get_playback_snapshot(self) -> Dict[str, object]:
+        with self._lock:
+            return {
+                "is_playing": bool(self.playback_state.is_playing),
+                "follow_live": bool(self.playback_state.follow_live),
+                "loop_enabled": bool(self.playback_state.loop_enabled),
+                "viewing_batch": int(self.timeline.display_batch_idx),
+                "live_batch": int(self.timeline.latest_online_batch_idx),
+            }
+
+    def reset_scene(self, timeline: TimelineState, *, waiting_message: str) -> None:
+        with self._lock:
+            self.server.scene.remove_by_name("/world")
+            self._add_world_frame()
+            self.timeline = timeline
+            self._bootstrap_points_handle = None
+            self._bootstrap_camera_handles = []
+            self._batch_point_handles = {}
+            self._batch_camera_handles = {}
+            self._query_highlight_handles = []
+            self._reference_highlight_handles = []
+            self.playback_state.reset(
+                loop_enabled=bool(getattr(self.args, "playback_loop", False))
+            )
+            self._has_initialized_view = False
+            self._run_start_time = time.perf_counter()
+            self._run_end_time = None
+            self._reconstruction_gpu_released = False
+            self.summary_markdown_handle.content = str(waiting_message)
+            self.query_caption_handle.content = "**Query Images**"
+            for handle in self.query_image_handles:
+                handle.visible = False
+            self._sync_playback_gui()
+
+    @classmethod
+    def _to_display_pose(cls, pose: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        local_pose = viser_tf.SE3.from_matrix(np.asarray(pose, dtype=np.float64)[:3, :4])
+        display_rotation = viser_tf.SO3(cls._DISPLAY_WXYZ)
+        rotation = display_rotation @ local_pose.rotation()
+        position = display_rotation @ local_pose.translation()
+        return rotation.wxyz, position
+
+    def _all_camera_poses(self) -> List[np.ndarray]:
+        poses = list(self.timeline.bootstrap_camera_poses)
+        for event in self.timeline.events:
+            poses.extend(event.added_camera_poses)
+        return poses
+
+    def _poses_for_display_batch(self) -> List[np.ndarray]:
+        target_idx = int(self.timeline.display_batch_idx)
+        for event in reversed(self.timeline.events):
+            if event.batch_idx <= target_idx and event.current_query_poses:
+                return list(event.current_query_poses)
+        return list(self.timeline.bootstrap_camera_poses)
+
+    def _display_positions(self, poses: Sequence[np.ndarray]) -> np.ndarray:
+        positions = [self._to_display_pose(pose)[1] for pose in poses]
+        if not positions:
+            return np.empty((0, 3), dtype=np.float64)
+        return np.asarray(positions, dtype=np.float64)
+
+    def _scene_center_and_scale(
+        self,
+        poses: Optional[Sequence[np.ndarray]] = None,
+    ) -> tuple[np.ndarray, float]:
+        positions = self._display_positions(self._all_camera_poses() if poses is None else poses)
+        if positions.shape[0] == 0:
+            return np.zeros(3, dtype=np.float64), 1.0
+        center = np.mean(positions, axis=0)
+        scale = float(np.linalg.norm(np.ptp(positions, axis=0))) if positions.shape[0] > 1 else 0.5
+        return center, max(0.25, scale)
+
+    @staticmethod
+    def _smooth_client_view(
+        client: object,
+        *,
+        target_position: np.ndarray,
+        target_look_at: np.ndarray,
+        target_up: np.ndarray,
+        duration: float = 0.4,
+    ) -> None:
+        def interpolate() -> None:
+            steps = 12
+            start_position = np.asarray(client.camera.position, dtype=np.float64)
+            start_look_at = np.asarray(client.camera.look_at, dtype=np.float64)
+            client.camera.up_direction = tuple(np.asarray(target_up, dtype=np.float64))
+            for step in range(steps + 1):
+                alpha = float(step) / float(steps)
+                alpha = alpha * alpha * (3.0 - 2.0 * alpha)
+                position = start_position + (target_position - start_position) * alpha
+                look_at = start_look_at + (target_look_at - start_look_at) * alpha
+                client.camera.position = tuple(position)
+                client.camera.look_at = tuple(look_at)
+                time.sleep(float(duration) / float(steps))
+
+        Thread(target=interpolate, daemon=True).start()
+
+    def _target_clients(self, client: Optional[object]) -> List[object]:
+        if client is not None:
+            return [client]
+        return list(self.server.get_clients().values())
+
+    def _set_overview_for_clients(
+        self,
+        client: Optional[object] = None,
+        *,
+        poses: Optional[Sequence[np.ndarray]] = None,
+        top: bool = False,
+    ) -> None:
+        center, scale = self._scene_center_and_scale(poses)
+        if top:
+            direction = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        else:
+            direction = np.array([0.65, -0.65, 0.55], dtype=np.float64)
+            direction /= np.linalg.norm(direction)
+            up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        target_position = center + direction * max(0.75, scale * 1.5)
+        for target_client in self._target_clients(client):
+            self._smooth_client_view(
+                target_client,
+                target_position=target_position,
+                target_look_at=center,
+                target_up=up,
+            )
+
+    def _move_client_to_pose(self, client: object, pose: np.ndarray) -> None:
+        wxyz, camera_position = self._to_display_pose(pose)
+        rotation = viser_tf.SO3(wxyz).as_matrix()
+        _, scene_scale = self._scene_center_and_scale()
+        offset = max(0.05, scene_scale * 0.05)
+        viewing_direction = rotation[:, 2]
+        self._smooth_client_view(
+            client,
+            target_position=camera_position - viewing_direction * offset,
+            target_look_at=camera_position + viewing_direction * max(offset, 0.1),
+            target_up=-rotation[:, 1],
+        )
+
+    def _attach_frustum_click(self, handle: object) -> None:
+        @handle.on_click
+        def _(event) -> None:
+            if event.client is None:
+                return
+            display_rotation = viser_tf.SO3(self._DISPLAY_WXYZ)
+            rotation = display_rotation @ viser_tf.SO3(np.asarray(handle.wxyz))
+            position = display_rotation @ np.asarray(handle.position, dtype=np.float64)
+            _, scene_scale = self._scene_center_and_scale()
+            offset = max(0.05, scene_scale * 0.05)
+            viewing_direction = rotation.as_matrix()[:, 2]
+            self._smooth_client_view(
+                event.client,
+                target_position=position - viewing_direction * offset,
+                target_look_at=position + viewing_direction * max(offset, 0.1),
+                target_up=-rotation.as_matrix()[:, 1],
+            )
+
+    def _apply_view_action(self, action: str, client: Optional[object]) -> None:
+        with self._lock:
+            if action == "Top":
+                self._set_overview_for_clients(client, top=True)
+            elif action == "Current Batch":
+                poses = self._poses_for_display_batch()
+                if poses:
+                    for target_client in self._target_clients(client):
+                        self._move_client_to_pose(target_client, poses[-1])
+            else:
+                self._set_overview_for_clients(client)
+
+    def _on_client_connect(self, client: object) -> None:
+        with self._lock:
+            if self.timeline.bootstrap_camera_poses:
+                self._set_overview_for_clients(client)
 
     def _update_summary_panel(self, *, batch_idx: int, event: Optional[BatchEvent]) -> None:
         processed_images = self.timeline.get_processed_image_count(batch_idx)
         total_images = max(0, int(self.timeline.total_images))
         elapsed_sec = self._get_elapsed_sec()
-        mean_time_per_frame = elapsed_sec / processed_images if processed_images > 0 else None
+        compute_time_sec = self.timeline.get_compute_time_sec(batch_idx)
+        compute_time_per_frame = (
+            compute_time_sec / processed_images if processed_images > 0 else None
+        )
         run_status_line = (
             "- Run status: finished\n"
             if self._run_end_time is not None
             else "- Run status: running\n"
+        )
+        gpu_status_line = (
+            "- Reconstruction GPU: released\n"
+            if self._reconstruction_gpu_released
+            else ""
+        )
+        latest_batch_idx = int(self.timeline.latest_online_batch_idx)
+        if self.playback_state.is_playing:
+            viewer_mode = "PLAYING"
+        elif self.playback_state.follow_live and self._run_end_time is None:
+            viewer_mode = "LIVE"
+        elif int(batch_idx) < latest_batch_idx:
+            viewer_mode = "REVIEWING"
+        elif self._run_end_time is not None:
+            viewer_mode = "FINISHED"
+        else:
+            viewer_mode = "PAUSED"
+        viewer_lines = (
+            f"- Viewer mode: `{viewer_mode}`\n"
+            f"- Viewing / live batch: {int(batch_idx)}/{latest_batch_idx}\n"
+            f"- Follow Live: {'on' if self.playback_state.follow_live else 'off'}\n"
         )
 
         if event is None:
@@ -484,10 +940,13 @@ class OnlineReconstructionViewer:
                 "**Stage:** bootstrap\n\n"
                 f"- Processed images: {processed_images}/{total_images}\n"
                 f"- Frame count: {len(self.timeline.bootstrap_frame_ids)}\n"
-                f"- Point count: {int(self.timeline.bootstrap_points.shape[0])}\n"
-                f"- Total time: {self._fmt_duration(elapsed_sec)}\n"
-                f"- Mean time / frame: {self._fmt_time_per_frame(mean_time_per_frame)}\n"
+                f"- Point count: {int(self.timeline.bootstrap_point_count)}\n"
+                f"- Scene elapsed: {self._fmt_duration(elapsed_sec)}\n"
+                f"- Reconstruction compute: {self._fmt_duration(compute_time_sec)}\n"
+                f"- Compute time / frame: {self._fmt_time_per_frame(compute_time_per_frame)}\n"
+                f"{viewer_lines}"
                 f"{run_status_line}"
+                f"{gpu_status_line}"
             )
             return
 
@@ -496,12 +955,22 @@ class OnlineReconstructionViewer:
             "",
             f"- Frame count: {event.global_frame_count_after}",
             f"- Point count: {event.global_point_count_after}",
-            f"- Total time: {self._fmt_duration(elapsed_sec)}",
-            f"- Mean time / frame: {self._fmt_time_per_frame(mean_time_per_frame)}",
+            f"- Scene elapsed: {self._fmt_duration(elapsed_sec)}",
+            f"- Reconstruction compute: {self._fmt_duration(compute_time_sec)}",
+            f"- Compute time / frame: {self._fmt_time_per_frame(compute_time_per_frame)}",
+            f"- Viewer mode: `{viewer_mode}`",
+            f"- Viewing / live batch: {int(batch_idx)}/{latest_batch_idx}",
+            f"- Follow Live: {'on' if self.playback_state.follow_live else 'off'}",
             run_status_line.rstrip(),
-            f"- Current batch: {event.batch_idx}",
-            f"- Batch status: `{event.status}`",
         ]
+        if gpu_status_line:
+            lines.append(gpu_status_line.rstrip())
+        lines.extend(
+            [
+                f"- Current batch: {event.batch_idx}",
+                f"- Batch status: `{event.status}`",
+            ]
+        )
         if any(item.get("event") == "pose_graph_merged" for item in event.pose_graph_events):
             lines.append("- PGO: state updated; historical viewer handles not refreshed")
         self.summary_markdown_handle.content = "\n".join(lines)
@@ -560,13 +1029,32 @@ class OnlineReconstructionViewer:
         return f"{float(value):.3f}s"
 
     def _status_loop(self) -> None:
-        while not self._shutdown_event.is_set():
-            time.sleep(0.25)
+        last_playback_tick = time.monotonic()
+        last_status_tick = 0.0
+        while not self._shutdown_event.wait(0.05):
+            now = time.monotonic()
             with self._lock:
-                self._update_summary_panel(
-                    batch_idx=self.timeline.display_batch_idx,
-                    event=self.timeline.get_event(self.timeline.display_batch_idx),
-                )
+                if self.playback_state.is_playing:
+                    interval = 1.0 / max(0.1, float(self._playback_fps))
+                    if now - last_playback_tick >= interval:
+                        next_idx = self.playback_state.advance(
+                            self.timeline.display_batch_idx,
+                            self.timeline.latest_online_batch_idx,
+                        )
+                        self.render_at(next_idx)
+                        last_playback_tick = now
+                else:
+                    last_playback_tick = now
+                if now - last_status_tick >= 0.25:
+                    self._update_summary_panel(
+                        batch_idx=self.timeline.display_batch_idx,
+                        event=self.timeline.get_event(self.timeline.display_batch_idx),
+                    )
+                    # Do not overwrite a browser-side drag while its callback is
+                    # waiting in Viser's thread pool. Explicit renders synchronize
+                    # the value after the selection has been applied.
+                    self._sync_playback_gui(update_timeline_value=False)
+                    last_status_tick = now
 
 
 def _build_event_from_log(
@@ -637,6 +1125,7 @@ def _build_event_from_log(
         inference_time_sec=(log.get("inference", {}) or {}).get("time_sec"),
         alignment_time_sec=log.get("alignment_time_sec"),
         fusion_time_sec=log.get("fusion_time_sec"),
+        total_time_sec=max(0.0, float(log.get("total_time_sec") or 0.0)),
         diagnostics=dict(log.get("diagnostics", {}) or {}),
         validation=log.get("validation"),
         formation=log.get("formation"),
@@ -667,6 +1156,7 @@ def _initialize_bootstrap_state(
     init_frame_ids = _frame_ids_from_paths(init_paths)
     init_frames = reconstructor.state.get_frames(init_frame_ids)
     bootstrap_points, bootstrap_colors = _collect_fused_chunks_from_frames(reconstructor, init_frames)
+    bootstrap_log = getattr(reconstructor, "bootstrap_log", {}) or {}
     timeline.set_bootstrap(
         frame_ids=init_frame_ids,
         image_paths=init_paths,
@@ -675,6 +1165,7 @@ def _initialize_bootstrap_state(
         camera_poses=[frame.cam2world for frame in init_frames],
         camera_intrinsics=[frame.intrinsic for frame in init_frames],
         camera_image_shapes=[_frame_image_shape(frame) for frame in init_frames],
+        compute_time_sec=max(0.0, float(bootstrap_log.get("total_time_sec") or 0.0)),
     )
 
 
@@ -787,7 +1278,18 @@ def run_online_demo(args: argparse.Namespace) -> None:
             batch_idx += 1
 
         reconstructor.finalize_pose_graph_optimization()
-        viewer.mark_finished()
+        viewer.mark_finished(
+            finalization_compute_time_sec=float(
+                reconstructor.runtime_stats.get("pose_graph_finalize_time_sec") or 0.0
+            )
+        )
+        reconstructor.shutdown()
+        viewer.mark_reconstruction_gpu_released()
+        gpu_release = reconstructor.runtime_stats.get("gpu_release", {})
+        print(
+            "Released reconstruction GPU resources; Viser remains interactive. "
+            f"PyTorch CUDA after release: {gpu_release}"
+        )
         print(f"Finished reconstruction. Total batches visualized: {timeline.latest_online_batch_idx}")
         while True:
             time.sleep(float(args.sleep_after_finish_sec))

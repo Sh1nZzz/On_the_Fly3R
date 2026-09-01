@@ -66,17 +66,14 @@ def test_public_cli_excludes_removed_modes() -> None:
         "--discard_frame_images_after_fusion",
         "--image_preprocess_cache",
         "--enable_image_preprocess_prefetch",
-        "--pose_graph_mode",
-        "--pose_opt_interval_frames",
         "--pose_opt_cooldown_frames",
         "--pose_opt_max_tail_frames",
         "--pose_opt_window_frames",
-        "--pose_opt_min_loop_edges",
     }
     assert option_strings.isdisjoint(removed_options)
     assert not hasattr(ReconstructionConfig(), "dynamic_batching")
     assert not hasattr(ReconstructionConfig(), "alignment_mode")
-    assert not hasattr(ReconstructionConfig(), "pose_graph_mode")
+    assert ReconstructionConfig().pose_graph_mode == "final"
 
 
 def test_public_ab05_config_uses_supported_arguments() -> None:

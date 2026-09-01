@@ -12,6 +12,7 @@ class FrameReconstruction:
     world_points: Optional[np.ndarray]
     world_points_conf: Optional[np.ndarray]
     image: Optional[np.ndarray]
+    optimized_cam2world: Optional[np.ndarray] = None
     retrieval_vector: Optional[np.ndarray] = None
     metadata: Dict[str, object] = field(default_factory=dict)
 

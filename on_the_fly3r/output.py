@@ -289,6 +289,7 @@ def _collect_summary_metrics(logs: list[dict], runtime_summary: dict) -> dict:
         if event.get("event") == "pose_graph_merged"
     ]
     final_pose_graph_events = [event for event in merged_pose_graph_events if event.get("phase") == "final"]
+    online_pose_graph_events = [event for event in merged_pose_graph_events if event.get("phase") == "online"]
     failed_pose_graph_events = [
         event
         for event in graph_events
@@ -344,6 +345,7 @@ def _collect_summary_metrics(logs: list[dict], runtime_summary: dict) -> dict:
         ),
         "num_pose_graph_events": int(len(graph_events)),
         "num_pose_graph_merges": int(len(merged_pose_graph_events)),
+        "num_online_pose_graph_merges": int(len(online_pose_graph_events)),
         "num_final_pose_graph_merges": int(len(final_pose_graph_events)),
         "num_pose_graph_failures": int(len(failed_pose_graph_events)),
         "num_final_pose_graph_skips": int(len(skipped_final_pose_graph_events)),
@@ -382,6 +384,8 @@ def _write_pose_exports(
         frame_ids=pose_data["frame_ids"],
         image_paths=pose_data["image_paths"],
         cam2world=pose_data["cam2world"],
+        cam2world_optimized=pose_data["cam2world_optimized"],
+        cam2world_map=pose_data["cam2world_map"],
         intrinsic=pose_data["intrinsic"],
         valid=pose_data["valid"],
     )
@@ -423,7 +427,9 @@ class PoseGraphOutputMixin:
         node_rows: List[Dict[str, object]] = []
         for frame_id in self.state.ordered_frame_ids():
             frame = self.state.get_frame(frame_id)
-            current_center = np.asarray(frame.cam2world, dtype=np.float64)[:3, 3]
+            current_center = np.asarray(
+                self.state.get_optimized_pose(frame_id), dtype=np.float64
+            )[:3, 3]
             before = np.asarray(initial_centers.get(frame_id, current_center), dtype=np.float64)
             after = np.asarray(refined_centers.get(frame_id, current_center), dtype=np.float64)
             order_index = self.state.get_frame_order_index(frame_id)

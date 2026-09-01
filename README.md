@@ -10,7 +10,7 @@ The current release supports:
 - Pi3, Pi3x, VGGT, VGGT-Omega, and MapAnything inference adapters;
 - SupScene-based image retrieval and retrieval-guided dynamic batching;
 - robust point-based Sim(3) alignment, validation, and reference-pruning retry;
-- optional final SE(3) pose-graph optimization with GTSAM;
+- optional final or loop-aware online SE(3) pose-graph optimization with GTSAM;
 - camera-pose, run-summary, and PLY point-cloud export;
 - an online Viser viewer.
 
@@ -58,8 +58,13 @@ python run_on_the_fly3r.py \
 ```
 
 Incoming images are grouped with retrieval-guided dynamic batching. Alignment
-uses compact point correspondences and robust Sim(3) estimation. When enabled,
+uses compact point correspondences and robust Sim(3) estimation. By default,
 pose-graph optimization runs once after incremental reconstruction finishes.
+Use `--pose_graph_mode online_and_final --pose_opt_interval_frames 50` to also
+check each 50 newly accepted frames for new loop edges and schedule online PGO
+on a dedicated worker thread when a loop is present. PGO updates a separate optimized camera
+trajectory; map poses, compact references, fused points, and the viewer remain
+unchanged.
 
 ## Configuration file
 
@@ -115,7 +120,9 @@ from on_the_fly3r import IncrementalReconstructor, ReconstructionConfig
 
 `ReconstructionConfig` defines the supported runtime configuration, while
 `IncrementalReconstructor` exposes bootstrap, incremental batch processing,
-final pose-graph optimization, and export operations.
+online/final pose-graph optimization, and export operations. Pose exports
+contain `cam2world_optimized` and `cam2world_map`; the backward-compatible
+`cam2world` field points to the optimized trajectory.
 
 ## Repository layout
 

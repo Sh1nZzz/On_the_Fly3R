@@ -75,7 +75,10 @@ def main() -> None:
         image_preprocess_prefetch_count=args.image_preprocess_prefetch_count,
         image_preprocess_prefetch_workers=args.image_preprocess_prefetch_workers,
         enable_pose_graph_optimization=args.enable_pose_graph_optimization,
+        pose_graph_mode=args.pose_graph_mode,
+        pose_opt_interval_frames=args.pose_opt_interval_frames,
         pose_opt_min_edges=args.pose_opt_min_edges,
+        pose_opt_min_loop_edges=args.pose_opt_min_loop_edges,
         pose_opt_max_nfev=args.pose_opt_max_nfev,
     )
 
@@ -100,7 +103,8 @@ def main() -> None:
     if args.enable_pose_graph_optimization:
         print(
             "Pose graph optimization: enabled "
-            f"(mode=final, min_edges={args.pose_opt_min_edges}, "
+            f"(mode={args.pose_graph_mode}, interval={args.pose_opt_interval_frames}, "
+            f"min_edges={args.pose_opt_min_edges}, min_new_loops={args.pose_opt_min_loop_edges}, "
             f"max_nfev={args.pose_opt_max_nfev})"
         )
     else:
@@ -210,8 +214,10 @@ def main() -> None:
         "image_preprocess_prefetch_workers": config.image_preprocess_prefetch_workers,
         "image_preprocess_prefetch_stats": runtime_summary.get("image_preprocess_prefetch"),
         "pose_graph_optimization_enabled": args.enable_pose_graph_optimization,
-        "pose_graph_mode": "final",
+        "pose_graph_mode": args.pose_graph_mode,
+        "pose_opt_interval_frames": args.pose_opt_interval_frames,
         "pose_opt_min_edges": args.pose_opt_min_edges,
+        "pose_opt_min_loop_edges": args.pose_opt_min_loop_edges,
         "pose_opt_max_nfev": args.pose_opt_max_nfev,
         "save_pose_graph_debug": args.save_pose_graph_debug,
         "num_batches": len(logs),

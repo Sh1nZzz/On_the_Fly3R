@@ -723,7 +723,10 @@ def _build_runtime_config(args: argparse.Namespace):
         image_preprocess_prefetch_count=args.image_preprocess_prefetch_count,
         image_preprocess_prefetch_workers=args.image_preprocess_prefetch_workers,
         enable_pose_graph_optimization=args.enable_pose_graph_optimization,
+        pose_graph_mode=args.pose_graph_mode,
+        pose_opt_interval_frames=args.pose_opt_interval_frames,
         pose_opt_min_edges=args.pose_opt_min_edges,
+        pose_opt_min_loop_edges=args.pose_opt_min_loop_edges,
         pose_opt_max_nfev=args.pose_opt_max_nfev,
     )
     model_args = SimpleNamespace(model=args.model, model_checkpoint=args.model_checkpoint)

@@ -23,6 +23,8 @@ class ReconstructionState:
         return frame_id in self.frames
 
     def add_frame(self, frame: FrameReconstruction) -> None:
+        if frame.optimized_cam2world is None:
+            frame.optimized_cam2world = np.asarray(frame.cam2world, dtype=np.float32).copy()
         if frame.frame_id not in self.frames:
             self.frame_order_index[frame.frame_id] = len(self.frame_order)
             self.frame_order.append(frame.frame_id)
@@ -42,6 +44,18 @@ class ReconstructionState:
 
     def get_frame_order_index(self, frame_id: str) -> Optional[int]:
         return self.frame_order_index.get(frame_id)
+
+    def get_map_pose(self, frame_id: str) -> np.ndarray:
+        return self.frames[frame_id].cam2world
+
+    def get_optimized_pose(self, frame_id: str) -> np.ndarray:
+        frame = self.frames[frame_id]
+        if frame.optimized_cam2world is None:
+            return frame.cam2world
+        return frame.optimized_cam2world
+
+    def set_optimized_pose(self, frame_id: str, pose: np.ndarray) -> None:
+        self.frames[frame_id].optimized_cam2world = np.asarray(pose, dtype=np.float32)
 
     def append_fused_points(
         self,
@@ -89,7 +103,8 @@ class ReconstructionState:
             image_paths = list(image_paths)
 
         frame_ids = [Path(path).stem for path in image_paths]
-        cam2world = np.full((len(frame_ids), 4, 4), np.nan, dtype=np.float32)
+        cam2world_map = np.full((len(frame_ids), 4, 4), np.nan, dtype=np.float32)
+        cam2world_optimized = np.full((len(frame_ids), 4, 4), np.nan, dtype=np.float32)
         intrinsic = np.full((len(frame_ids), 3, 3), np.nan, dtype=np.float32)
         valid = np.zeros((len(frame_ids),), dtype=bool)
 
@@ -97,14 +112,22 @@ class ReconstructionState:
             frame = self.frames.get(frame_id)
             if frame is None:
                 continue
-            cam2world[idx] = frame.cam2world.astype(np.float32, copy=False)
+            cam2world_map[idx] = frame.cam2world.astype(np.float32, copy=False)
+            optimized_pose = (
+                frame.optimized_cam2world
+                if frame.optimized_cam2world is not None
+                else frame.cam2world
+            )
+            cam2world_optimized[idx] = np.asarray(optimized_pose, dtype=np.float32)
             intrinsic[idx] = frame.intrinsic.astype(np.float32, copy=False)
             valid[idx] = True
 
         return {
             "frame_ids": np.asarray(frame_ids),
             "image_paths": np.asarray([str(path) for path in image_paths]),
-            "cam2world": cam2world,
+            "cam2world": cam2world_optimized,
+            "cam2world_optimized": cam2world_optimized,
+            "cam2world_map": cam2world_map,
             "intrinsic": intrinsic,
             "valid": valid,
         }

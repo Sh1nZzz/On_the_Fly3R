@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
@@ -35,6 +36,99 @@ class PoseGraphResult:
     cam2world_refined: np.ndarray
     snapshot_frame_count: int
     summary: Dict[str, object]
+
+
+@dataclass(frozen=True)
+class OnlinePoseGraphJob:
+    snapshot: PoseGraphSnapshot
+    check_index: int
+    new_loop_edges: int
+    interval_frames: int
+    snapshot_build_time_sec: float
+
+
+@dataclass
+class OnlinePoseGraphOutcome:
+    job: OnlinePoseGraphJob
+    result: Optional[PoseGraphResult]
+    effective_frame_ids: List[str]
+    effective_cam2world: np.ndarray
+    accepted: bool
+    discard_reason: Optional[str]
+    error: Optional[str]
+    online_total_time_sec: float
+
+
+def _run_online_pose_graph_job(
+    job: OnlinePoseGraphJob,
+    previous_future: Optional[Future],
+    *,
+    max_nfev: int,
+) -> OnlinePoseGraphOutcome:
+    """Run one queued PGO job without reading or writing reconstruction state."""
+    online_start = time.perf_counter()
+    initial = np.asarray(job.snapshot.cam2world, dtype=np.float32).copy()
+
+    if previous_future is not None:
+        previous = previous_future.result()
+        previous_by_id = {
+            frame_id: previous.effective_cam2world[idx]
+            for idx, frame_id in enumerate(previous.effective_frame_ids)
+        }
+        for idx, frame_id in enumerate(job.snapshot.frame_ids):
+            previous_pose = previous_by_id.get(frame_id)
+            if previous_pose is not None:
+                initial[idx] = previous_pose
+
+    prepared_snapshot = PoseGraphSnapshot(
+        frame_ids=list(job.snapshot.frame_ids),
+        cam2world=initial,
+        edges=list(job.snapshot.edges),
+        snapshot_frame_count=int(job.snapshot.snapshot_frame_count),
+        trigger_reason=job.snapshot.trigger_reason,
+    )
+    try:
+        result = optimize_pose_graph(
+            prepared_snapshot,
+            max_nfev=int(max_nfev),
+        )
+    except Exception as exc:
+        return OnlinePoseGraphOutcome(
+            job=job,
+            result=None,
+            effective_frame_ids=list(prepared_snapshot.frame_ids),
+            effective_cam2world=initial,
+            accepted=False,
+            discard_reason=None,
+            error=str(exc),
+            online_total_time_sec=time.perf_counter() - online_start,
+        )
+
+    initial_cost = float(result.summary.get("initial_cost") or 0.0)
+    final_cost = float(result.summary.get("final_cost") or 0.0)
+    success = bool(result.summary.get("success", False))
+    finite_costs = bool(np.isfinite(initial_cost) and np.isfinite(final_cost))
+    accepted = bool(success and finite_costs and final_cost <= initial_cost + 1e-9)
+    if not success:
+        discard_reason = "optimizer_unsuccessful"
+    elif not finite_costs:
+        discard_reason = "non_finite_cost"
+    elif not accepted:
+        discard_reason = "cost_increased"
+    else:
+        discard_reason = None
+
+    effective = result.cam2world_refined if accepted else initial
+    return OnlinePoseGraphOutcome(
+        job=job,
+        result=result,
+        effective_frame_ids=list(result.frame_ids),
+        effective_cam2world=np.asarray(effective, dtype=np.float32).copy(),
+        accepted=accepted,
+        discard_reason=discard_reason,
+        error=None,
+        online_total_time_sec=time.perf_counter() - online_start,
+    )
 
 
 class _DisjointSet:
@@ -358,6 +452,7 @@ class PoseGraphMixin:
             return
 
         start_count = len(self.pose_graph_edges)
+        new_loop_count = 0
         num_refs = len(neighbor_frames)
         if num_refs <= 0:
             return
@@ -380,6 +475,7 @@ class PoseGraphMixin:
                 if ref_order is not None and fresh_order is not None:
                     if abs(int(fresh_order) - int(ref_order)) >= int(self.config.pose_graph_loop_min_separation):
                         edge_type = "loop"
+                        new_loop_count += 1
                 self.pose_graph_edges.append(
                     PoseGraphEdge(
                         source_id=ref_frame.frame_id,
@@ -422,6 +518,7 @@ class PoseGraphMixin:
                 "frame_count": int(self.state.frame_count()),
             }
             self.pose_graph_events.append(event)
+        self._online_pgo_new_loop_edges_since_check += int(new_loop_count)
 
     def _record_local_continuity_edges(
         self,
@@ -553,7 +650,7 @@ class PoseGraphMixin:
         if len(edges) < int(self.config.pose_opt_min_edges):
             return None
         poses = np.stack(
-            [self.state.get_frame(frame_id).cam2world for frame_id in frame_ids],
+            [self.state.get_optimized_pose(frame_id) for frame_id in frame_ids],
             axis=0,
         ).astype(np.float32)
         return PoseGraphSnapshot(
@@ -625,7 +722,7 @@ class PoseGraphMixin:
             translation_deltas.append(float(np.linalg.norm(delta[:3, 3])))
             rotation_deltas_deg.append(self._delta_rotation_deg(delta))
             if not self._is_near_identity_delta(delta):
-                self._apply_pose_delta_to_frame_pose(frame_id=frame_id, new_pose=new_pose)
+                self._apply_optimized_pose_update(frame_id=frame_id, new_pose=new_pose)
                 updated_count += 1
             optimized_count += 1
         event = {
@@ -661,11 +758,191 @@ class PoseGraphMixin:
         )
         return event
 
+    def maybe_run_online_pose_graph_optimization(
+        self,
+        accepted_frame_count: int,
+    ) -> List[Dict[str, object]]:
+        events: List[Dict[str, object]] = []
+        if (
+            not self.config.enable_pose_graph_optimization
+            or self.config.pose_graph_mode not in {"online", "online_and_final"}
+        ):
+            return events
+
+        self._online_pgo_accepted_frames_since_check += max(0, int(accepted_frame_count))
+        interval = int(self.config.pose_opt_interval_frames)
+        if self._online_pgo_accepted_frames_since_check < interval:
+            return events
+
+        self._online_pgo_accepted_frames_since_check -= interval
+        self._online_pgo_check_count += 1
+        new_loop_edges = int(self._online_pgo_new_loop_edges_since_check)
+        self._online_pgo_new_loop_edges_since_check = 0
+
+        if new_loop_edges < int(self.config.pose_opt_min_loop_edges):
+            event = {
+                "event": "pose_graph_online_skipped",
+                "phase": "online",
+                "reason": "no_new_loop_edges",
+                "check_index": int(self._online_pgo_check_count),
+                "frame_count": int(self.state.frame_count()),
+                "new_loop_edges": int(new_loop_edges),
+                "interval_frames": int(interval),
+            }
+            self.pose_graph_events.append(event)
+            events.append(event)
+            return events
+
+        build_start = time.perf_counter()
+        snapshot = self._build_pose_graph_snapshot("online_interval_loop")
+        snapshot_build_time = time.perf_counter() - build_start
+        if snapshot is None:
+            event = {
+                "event": "pose_graph_online_skipped",
+                "phase": "online",
+                "reason": "not_enough_edges",
+                "check_index": int(self._online_pgo_check_count),
+                "frame_count": int(self.state.frame_count()),
+                "num_edges": int(len(self.pose_graph_edges)),
+                "min_edges": int(self.config.pose_opt_min_edges),
+                "new_loop_edges": int(new_loop_edges),
+                "interval_frames": int(interval),
+                "snapshot_build_time_sec": snapshot_build_time,
+            }
+            self.pose_graph_events.append(event)
+            events.append(event)
+            return events
+
+        executor = self._ensure_online_pose_graph_executor()
+        job = OnlinePoseGraphJob(
+            snapshot=snapshot,
+            check_index=int(self._online_pgo_check_count),
+            new_loop_edges=int(new_loop_edges),
+            interval_frames=int(interval),
+            snapshot_build_time_sec=float(snapshot_build_time),
+        )
+        previous_future = getattr(self, "_online_pgo_last_future", None)
+        future = executor.submit(
+            _run_online_pose_graph_job,
+            job,
+            previous_future,
+            max_nfev=int(self.config.pose_opt_max_nfev),
+        )
+        self._online_pgo_last_future = future
+        self._online_pgo_pending_jobs.append((job, future))
+        event = {
+            "event": "pose_graph_online_scheduled",
+            "phase": "online",
+            "check_index": int(job.check_index),
+            "frame_count": int(self.state.frame_count()),
+            "num_snapshot_frames": int(len(snapshot.frame_ids)),
+            "num_edges": int(len(snapshot.edges)),
+            "new_loop_edges": int(new_loop_edges),
+            "interval_frames": int(interval),
+            "snapshot_build_time_sec": snapshot_build_time,
+        }
+        print(
+            "[Pose Graph Online Scheduled] "
+            f"check={job.check_index} frames={len(snapshot.frame_ids)} "
+            f"edges={len(snapshot.edges)} new_loops={new_loop_edges} "
+            f"max_iter={self.config.pose_opt_max_nfev}"
+        )
+        self.pose_graph_events.append(event)
+        events.append(event)
+        return events
+
+    def _ensure_online_pose_graph_executor(self) -> ThreadPoolExecutor:
+        executor = getattr(self, "_online_pgo_executor", None)
+        if executor is None:
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="online-pgo")
+            self._online_pgo_executor = executor
+            self._online_pgo_pending_jobs = []
+            self._online_pgo_last_future = None
+        return executor
+
+    def _consume_online_pose_graph_outcome(
+        self,
+        outcome: OnlinePoseGraphOutcome,
+    ) -> Dict[str, object]:
+        job = outcome.job
+        if outcome.error is not None:
+            event = {
+                "event": "pose_graph_failed",
+                "phase": "online",
+                "error": outcome.error,
+                "check_index": int(job.check_index),
+                "frame_count": int(self.state.frame_count()),
+                "num_snapshot_frames": int(len(job.snapshot.frame_ids)),
+                "num_edges": int(len(job.snapshot.edges)),
+                "new_loop_edges": int(job.new_loop_edges),
+            }
+        elif not outcome.accepted:
+            result = outcome.result
+            event = {
+                "event": "pose_graph_discarded",
+                "phase": "online",
+                "reason": outcome.discard_reason,
+                "check_index": int(job.check_index),
+                "snapshot_frame_count": int(job.snapshot.snapshot_frame_count),
+                "current_frame_count": int(self.state.frame_count()),
+                "new_loop_edges": int(job.new_loop_edges),
+                "summary": (
+                    self._public_pose_graph_summary(result.summary)
+                    if result is not None
+                    else {}
+                ),
+            }
+            self._print_pose_graph_discard(event)
+        else:
+            if outcome.result is None:
+                raise RuntimeError("Accepted online PGO outcome has no optimization result.")
+            event = self._merge_pose_graph_result(outcome.result)
+            event["phase"] = "online"
+            event["check_index"] = int(job.check_index)
+            event["new_loop_edges"] = int(job.new_loop_edges)
+            if event.get("event") == "pose_graph_merged":
+                self._online_pgo_run_count += 1
+
+        event["interval_frames"] = int(job.interval_frames)
+        event["snapshot_build_time_sec"] = float(job.snapshot_build_time_sec)
+        event["online_total_time_sec"] = float(outcome.online_total_time_sec)
+        print(
+            "[Pose Graph Online Finished] "
+            f"check={job.check_index} event={event.get('event')} "
+            f"frames={event.get('num_snapshot_frames', len(job.snapshot.frame_ids))} "
+            f"edges={len(job.snapshot.edges)} new_loops={job.new_loop_edges} "
+            f"total={outcome.online_total_time_sec:.2f}s"
+        )
+        self.pose_graph_events.append(event)
+        return event
+
+    def _drain_online_pose_graph_jobs(self) -> List[Dict[str, object]]:
+        events: List[Dict[str, object]] = []
+        pending_jobs = list(getattr(self, "_online_pgo_pending_jobs", []))
+        for _job, future in pending_jobs:
+            outcome = future.result()
+            events.append(self._consume_online_pose_graph_outcome(outcome))
+        self._online_pgo_pending_jobs = []
+        self._online_pgo_last_future = None
+        return events
+
+    def shutdown_online_pose_graph_worker(self, *, wait: bool = True) -> None:
+        executor = getattr(self, "_online_pgo_executor", None)
+        if executor is None:
+            return
+        executor.shutdown(wait=wait, cancel_futures=False)
+        self._online_pgo_executor = None
+
     def finalize_pose_graph_optimization(self) -> List[Dict[str, object]]:
         events: List[Dict[str, object]] = []
         if not self.config.enable_pose_graph_optimization:
             return events
         finalize_start = time.perf_counter()
+        events.extend(self._drain_online_pose_graph_jobs())
+        self.shutdown_online_pose_graph_worker(wait=True)
+        if self.config.pose_graph_mode == "online":
+            self.runtime_stats["pose_graph_finalize_time_sec"] = time.perf_counter() - finalize_start
+            return events
 
         build_start = time.perf_counter()
         snapshot = self._build_pose_graph_snapshot("final")
@@ -791,14 +1068,13 @@ class PoseGraphMixin:
             "max": float(np.max(arr)),
         }
 
-    def _apply_pose_delta_to_frame_pose(
+    def _apply_optimized_pose_update(
         self,
         *,
         frame_id: str,
         new_pose: np.ndarray,
     ) -> None:
-        frame = self.state.get_frame(frame_id)
-        frame.cam2world = np.asarray(new_pose, dtype=np.float32)
+        self.state.set_optimized_pose(frame_id, new_pose)
 
     def _make_pose_graph_debug_payload(self, result: PoseGraphResult) -> Dict[str, object]:
         payload: Dict[str, object] = {

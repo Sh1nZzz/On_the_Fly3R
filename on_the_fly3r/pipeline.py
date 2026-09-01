@@ -82,6 +82,13 @@ class IncrementalReconstructor(RetrievalPlanningMixin, PreprocessingMixin, Align
         self.pose_graph_edges: List[PoseGraphEdge] = []
         self.pose_graph_events: List[Dict[str, object]] = []
         self._last_pose_graph_debug_payload: Optional[Dict[str, object]] = None
+        self._online_pgo_accepted_frames_since_check = 0
+        self._online_pgo_new_loop_edges_since_check = 0
+        self._online_pgo_check_count = 0
+        self._online_pgo_run_count = 0
+        self._online_pgo_executor = None
+        self._online_pgo_pending_jobs = []
+        self._online_pgo_last_future = None
         self._continuity_translation_steps: List[float] = []
         self._continuity_rotation_steps_deg: List[float] = []
         self.alignment_fn = alignment_fn or self._estimate_alignment
@@ -95,6 +102,7 @@ class IncrementalReconstructor(RetrievalPlanningMixin, PreprocessingMixin, Align
         }
 
     def shutdown(self) -> None:
+        self.shutdown_online_pose_graph_worker(wait=True)
         self.runner.clear_image_preprocess_cache()
         self.retrieval_manager.shutdown()
         self._poll_image_preprocess_prefetch()
@@ -406,6 +414,9 @@ class IncrementalReconstructor(RetrievalPlanningMixin, PreprocessingMixin, Align
                         scored_neighbors_per_frame=scored_neighbors_per_frame,
                         alignment=retry_alignment,
                     )
+                    pose_graph_events.extend(
+                        self.maybe_run_online_pose_graph_optimization(len(fresh_frame_ids))
+                    )
                     subset.vfm_register_tokens = None
                     accepted_stage = register_retry_log.get("accepted_stage", "unknown") if register_retry_log else "unknown"
                     print(
@@ -478,6 +489,9 @@ class IncrementalReconstructor(RetrievalPlanningMixin, PreprocessingMixin, Align
             query_features=query_features,
             scored_neighbors_per_frame=scored_neighbors_per_frame,
             alignment=alignment,
+        )
+        pose_graph_events.extend(
+            self.maybe_run_online_pose_graph_optimization(len(fresh_frame_ids))
         )
         log = {
             "frame_ids": fresh_frame_ids,
@@ -556,8 +570,13 @@ class IncrementalReconstructor(RetrievalPlanningMixin, PreprocessingMixin, Align
             "bootstrap": self.bootstrap_log,
             "pose_graph": {
                 "enabled": bool(self.config.enable_pose_graph_optimization),
-                "mode": "final",
+                "mode": self.config.pose_graph_mode,
                 "num_edges": int(len(self.pose_graph_edges)),
+                "online_interval_frames": int(self.config.pose_opt_interval_frames),
+                "online_checks": int(self._online_pgo_check_count),
+                "online_runs": int(self._online_pgo_run_count),
+                "accepted_frames_since_online_check": int(self._online_pgo_accepted_frames_since_check),
+                "new_loop_edges_since_online_check": int(self._online_pgo_new_loop_edges_since_check),
                 "events": list(self.pose_graph_events),
             },
             "image_preprocess_cache": self.runner.image_preprocess_cache_stats(),

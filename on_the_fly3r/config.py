@@ -67,7 +67,10 @@ class ReconstructionConfig:
     alignment_compact_max_points: int = 5000
     alignment_compact_grid_cell_size: Optional[int] = None
     enable_pose_graph_optimization: bool = False
+    pose_graph_mode: str = "final"
+    pose_opt_interval_frames: int = 50
     pose_opt_min_edges: int = 30
+    pose_opt_min_loop_edges: int = 1
     pose_opt_max_nfev: int = 15
     pose_graph_loop_min_separation: int = 50
     pose_graph_continuity_similarity_min: float = 0.65
@@ -92,7 +95,12 @@ class ReconstructionConfig:
         if self.alignment_compact_grid_cell_size is None:
             self.alignment_compact_grid_cell_size = 32
         self.alignment_compact_grid_cell_size = max(1, int(self.alignment_compact_grid_cell_size))
+        self.pose_graph_mode = str(self.pose_graph_mode).strip().lower()
+        if self.pose_graph_mode not in {"final", "online", "online_and_final"}:
+            raise ValueError(f"Unsupported pose_graph_mode: {self.pose_graph_mode}")
+        self.pose_opt_interval_frames = max(1, int(self.pose_opt_interval_frames))
         self.pose_opt_min_edges = max(0, int(self.pose_opt_min_edges))
+        self.pose_opt_min_loop_edges = max(1, int(self.pose_opt_min_loop_edges))
         self.pose_opt_max_nfev = max(1, int(self.pose_opt_max_nfev))
         self.pose_graph_loop_min_separation = max(1, int(self.pose_graph_loop_min_separation))
         self.pose_graph_continuity_ref_overlap_min = max(0, int(self.pose_graph_continuity_ref_overlap_min))
@@ -160,8 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image_preprocess_cache_max_images", type=int, default=1500, help="Maximum number of CPU preprocessed image entries kept in the runtime LRU cache.")
     parser.add_argument("--image_preprocess_prefetch_count", type=int, default=20, help="How many upcoming images to keep ahead in the VFM image preprocess prefetch queue.")
     parser.add_argument("--image_preprocess_prefetch_workers", type=int, default=1, help="Number of CPU workers used for image preprocess prefetch.")
-    parser.add_argument("--enable_pose_graph_optimization", action="store_true", help="Enable final frame-level SE3 pose-graph optimization. PGO updates camera poses only; fused point clouds are not transformed.")
-    parser.add_argument("--pose_opt_min_edges", type=int, default=30, help="Minimum pose-graph edges required for final optimization.")
+    parser.add_argument("--enable_pose_graph_optimization", action="store_true", help="Enable frame-level SE3 pose-graph optimization. PGO updates optimized camera poses only; map poses and fused point clouds are unchanged.")
+    parser.add_argument("--pose_graph_mode", type=str, default="final", choices=["final", "online", "online_and_final"], help="PGO execution mode: final runs once at export, online checks for new loops at fixed accepted-frame intervals, and online_and_final does both.")
+    parser.add_argument("--pose_opt_interval_frames", type=int, default=50, help="Number of newly accepted frames between online loop checks.")
+    parser.add_argument("--pose_opt_min_edges", type=int, default=30, help="Minimum pose-graph edges required for one optimization.")
+    parser.add_argument("--pose_opt_min_loop_edges", type=int, default=1, help="Minimum new loop edges in the current online check window required to run PGO.")
     parser.add_argument("--pose_opt_max_nfev", type=int, default=15, help="Maximum optimizer iterations/evaluations for one pose-graph job.")
     parser.add_argument("--save_pose_graph_debug", action="store_true", help="Export PGO nodes/edges CSV/JSON plus 2D/3D spatial graph PNGs.")
     parser.add_argument("--save_batch_logs", action="store_true", help="Save per-batch reconstruction logs to batch_logs.json for debugging and ablation analysis.")
@@ -210,7 +221,10 @@ def build_parser() -> argparse.ArgumentParser:
         validation_scale_min=defaults.validation_scale_min,
         validation_scale_max=defaults.validation_scale_max,
         enable_pose_graph_optimization=defaults.enable_pose_graph_optimization,
+        pose_graph_mode=defaults.pose_graph_mode,
+        pose_opt_interval_frames=defaults.pose_opt_interval_frames,
         pose_opt_min_edges=defaults.pose_opt_min_edges,
+        pose_opt_min_loop_edges=defaults.pose_opt_min_loop_edges,
         pose_opt_max_nfev=defaults.pose_opt_max_nfev,
     )
     return parser

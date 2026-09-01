@@ -54,7 +54,10 @@ defaults:
   image_preprocess_prefetch_count: 20
   image_preprocess_prefetch_workers: 1
   enable_pose_graph_optimization: false
+  pose_graph_mode: final
+  pose_opt_interval_frames: 50
   pose_opt_min_edges: 30
+  pose_opt_min_loop_edges: 1
   pose_opt_max_nfev: 15
   save_ply: true
   ply_export_mode: dedup

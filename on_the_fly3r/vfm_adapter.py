@@ -299,6 +299,10 @@ class VFMInferenceRunner:
     def clear_image_preprocess_cache(self) -> None:
         self.image_preprocess_cache.clear()
 
+    def release_gpu_resources(self) -> None:
+        """Drop the resident reconstruction model after inference is complete."""
+        self.model = None
+
 
 
 def load_vfm(model_args, device):

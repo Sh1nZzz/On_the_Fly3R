@@ -1,7 +1,9 @@
-# On-the-Fly3R: Towards Robust Online 3D Reconstruction with Feed-Forward 3R Models for Large-Scale UAV Scenarios
+<h1 align="center">On-the-Fly3R</h1>
+
+<h3 align="center">Towards Robust Online 3D Reconstruction with Feed-Forward 3R Models for Large-Scale UAV Scenarios</h3>
 
 <p align="center">
-  Project Page (Coming Soon) · Paper (Coming Soon)
+  Project Page (Coming Soon) · <a href="https://arxiv.org/abs/2609.00923">Paper</a>
 </p>
 
 <p align="center">

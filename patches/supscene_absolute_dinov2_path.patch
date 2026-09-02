@@ -1,0 +1,26 @@
+diff --git a/supscene/models/backbone/dinov2.py b/supscene/models/backbone/dinov2.py
+--- a/supscene/models/backbone/dinov2.py
++++ b/supscene/models/backbone/dinov2.py
+@@ -1,3 +1,4 @@
++from pathlib import Path
+ import torch
+ import torch.nn as nn
+ from torchvision.transforms import CenterCrop
+@@ -40,7 +41,16 @@ class DINOv2(nn.Module):
+ 
+         assert model_name in DINOV2_ARCHS.keys(), f'Unknown model name {model_name}'
+         
+-        self.model = torch.hub.load('third_party/dinov2', model_name, source='local')
++        dinov2_repo = Path(__file__).resolve().parents[3] / 'third_party' / 'dinov2'
++        dinov2_hubconf = dinov2_repo / 'hubconf.py'
++        if not dinov2_hubconf.is_file():
++            raise FileNotFoundError(
++                f'DINOv2 submodule is missing: {dinov2_hubconf}. '
++                'Run: git -C SupScene submodule update --init --recursive'
++            )
++        self.model = torch.hub.load(
++            str(dinov2_repo), model_name, source='local'
++        )
+             
+         self.num_channels = self.model.embed_dim
+         self.num_trainable_blocks = num_trainable_blocks

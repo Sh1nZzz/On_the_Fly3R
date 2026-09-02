@@ -6,8 +6,8 @@ Source: https://github.com/DengKaiCQ/VGGT-Long/blob/main/loop_utils/sim3utils.py
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
 #
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
+# This source code is subject to the VGGT License:
+# https://github.com/DengKaiCQ/VGGT-Long/blob/main/LICENSE.txt
 
 import numpy as np
 

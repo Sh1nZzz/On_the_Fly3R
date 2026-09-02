@@ -1,16 +1,42 @@
-# On-the-Fly3R
+# On-the-Fly3R: Towards Robust Online 3D Reconstruction with Feed-Forward 3R Models for Large-Scale UAV Scenarios
 
-On-the-Fly3R is an incremental 3D reconstruction framework built around 3D
-vision foundation models. It reconstructs an initial image window, retrieves
-relevant reference frames for new images, aligns every local reconstruction to
-the global map, and incrementally fuses the result.
+<p align="center">
+  Project Page (Coming Soon) · Paper (Coming Soon)
+</p>
 
-The current release supports:
+<p align="center">
+  <img src="assets/On-the-Fly3R_overview.jpg" alt="On-the-Fly3R overview" width="100%">
+</p>
 
-- Pi3, Pi3x, VGGT, VGGT-Omega, and MapAnything inference adapters;
+On-the-Fly3R is a robust online 3D reconstruction framework designed for
+large-scale UAV image streams. It incrementally reconstructs incoming images
+without repeatedly processing the complete sequence, enabling scalable
+reconstruction over large and continuously expanding scenes.
+
+The framework combines retrieval-guided dynamic subset construction,
+feed-forward 3R model inference, confidence-weighted Sim(3) alignment,
+validation-and-retry, and pose-graph optimization. Its model-agnostic design
+supports multiple feed-forward 3R backbones, including Pi3, Pi3X, VGGT,
+VGGT-Omega, and MapAnything.
+
+## Method Overview
+
+<p align="center">
+  <img src="assets/pipeline.jpg" alt="On-the-Fly3R reconstruction pipeline" width="100%">
+</p>
+
+Given a stream of UAV images, On-the-Fly3R retrieves relevant global
+references and dynamically constructs compact local subsets for feed-forward
+3R inference. Each local reconstruction is aligned with the global map through
+confidence-weighted Sim(3) estimation, followed by validation-and-retry and
+pose-graph optimization.
+
+The current release provides:
+
 - SupScene-based image retrieval and retrieval-guided dynamic batching;
-- robust point-based Sim(3) alignment, validation, and reference-pruning retry;
-- optional final or loop-aware online SE(3) pose-graph optimization with GTSAM;
+- Pi3, Pi3X, VGGT, VGGT-Omega, and MapAnything inference adapters;
+- robust point-based Sim(3) alignment with validation and reference-pruning retry;
+- final and loop-aware online SE(3) pose-graph optimization with GTSAM;
 - camera-pose, run-summary, and PLY point-cloud export;
 - an online Viser viewer.
 
@@ -20,8 +46,8 @@ The recommended environment is Linux, Python 3.11, PyTorch, and a CUDA-capable
 GPU. Install PyTorch and TorchVision for your CUDA version first, then run:
 
 ```bash
-git clone https://github.com/Sh1nZzz/On-the-Fly3R.git
-cd On-the-Fly3R
+git clone https://github.com/Sh1nZzz/On_the_Fly3R.git
+cd On_the_Fly3R
 
 conda create -n on_the_fly3r python=3.11 -y
 conda activate on_the_fly3r
@@ -30,24 +56,40 @@ conda activate on_the_fly3r
 bash setup.sh
 ```
 
-`setup.sh` installs this project and prepares the external `Pi3/` and
-`SupScene/` repositories. Model checkpoints and datasets are not included in
-this repository.
+`setup.sh` installs this project, prepares the external `Pi3/` and `SupScene/`
+repositories, initializes their nested Git submodules, and applies the
+maintained SupScene compatibility patch. Model checkpoints and datasets are
+not included in this repository.
 
-Provide the local checkpoints explicitly:
+Provide the local checkpoints in the configuration file or through command-line
+arguments:
 
-- Pi3/Pi3x: `--model_checkpoint /path/to/model.safetensors`
-- SupScene: `--supscene_weights /path/to/dinov2_scpp_supscene_1536.pth`
+- Pi3/Pi3X: `model_checkpoint: /path/to/model.safetensors`
+- SupScene: `supscene_weights: /path/to/dinov2_scpp_supscene_1536.pth`
 
-## Quick start
+Additional 3R backbones should be installed and prepared according to their
+official repositories.
 
-Place an ordered image sequence in one directory and run:
+## Quick Start
+
+Place an ordered image sequence in one directory and edit the `editable`
+section in `configs/incremental_ablation_template.yaml` for your machine,
+dataset, checkpoints, and CUDA devices. Then run:
+
+```bash
+python run_on_the_fly3r.py \
+  --config configs/incremental_ablation_template.yaml \
+  --case ab05_all_on
+```
+
+Command-line arguments override values loaded from the configuration file.
+For example:
 
 ```bash
 python run_on_the_fly3r.py \
   --image_dir /path/to/images \
   --output_dir outputs/example \
-  --model Pi3x \
+  --model Pi3X \
   --model_checkpoint /path/to/model.safetensors \
   --supscene_weights /path/to/dinov2_scpp_supscene_1536.pth \
   --inference_device cuda:0 \
@@ -58,30 +100,14 @@ python run_on_the_fly3r.py \
 ```
 
 Incoming images are grouped with retrieval-guided dynamic batching. Alignment
-uses compact point correspondences and robust Sim(3) estimation. By default,
-pose-graph optimization runs once after incremental reconstruction finishes.
-Use `--pose_graph_mode online_and_final --pose_opt_interval_frames 50` to also
-check each 50 newly accepted frames for new loop edges and schedule online PGO
-on a dedicated worker thread when a loop is present. PGO updates a separate optimized camera
-trajectory; map poses, compact references, fused points, and the viewer remain
-unchanged.
+uses compact point correspondences and robust Sim(3) estimation. Pose-graph
+optimization runs after incremental reconstruction. The `online_and_final`
+mode additionally checks newly accepted frames for loop edges and schedules
+online optimization while retaining a final optimization pass.
 
-## Configuration file
+## Online Viewer
 
-For repeatable experiments, edit the `editable` section in
-`configs/incremental_ablation_template.yaml`, then select a case:
-
-```bash
-python run_on_the_fly3r.py \
-  --config configs/incremental_ablation_template.yaml \
-  --case ab05_all_on
-```
-
-Command-line arguments override values loaded from the YAML file.
-
-## Online viewer
-
-Use the same reconstruction arguments with the Viser entrypoint:
+Use the same reconstruction configuration with the Viser entrypoint:
 
 ```bash
 python view_on_the_fly3r.py \
@@ -92,9 +118,9 @@ python view_on_the_fly3r.py \
 
 Open `http://localhost:8080` in a browser after the server starts.
 
-## Outputs
+## Outputs and Evaluation
 
-Each run writes its artifacts under `--output_dir`. Depending on the enabled
+Each run writes its artifacts under `output_dir`. Depending on the enabled
 options, these include:
 
 - `camera_poses.npz`: reconstructed camera poses;
@@ -120,24 +146,25 @@ from on_the_fly3r import IncrementalReconstructor, ReconstructionConfig
 
 `ReconstructionConfig` defines the supported runtime configuration, while
 `IncrementalReconstructor` exposes bootstrap, incremental batch processing,
-online/final pose-graph optimization, and export operations. Pose exports
-contain `cam2world_optimized` and `cam2world_map`; the backward-compatible
+pose-graph optimization, and export operations. Pose exports contain
+`cam2world_optimized` and `cam2world_map`; the backward-compatible
 `cam2world` field points to the optimized trajectory.
 
-## Repository layout
+## Repository Layout
 
 ```text
 on_the_fly3r/       reconstruction pipeline and runtime components
 third_party_codes/ minimal vendored runtime utilities
 evaluation/         pose evaluation
 configs/            reproducible run configurations
+patches/            maintained compatibility patches for external repositories
 tests/              regression tests
 ```
 
 External repositories, weights, datasets, caches, and generated outputs should
 remain outside Git.
 
-## Development checks
+## Development Checks
 
 ```bash
 python -m pip install pytest
@@ -145,3 +172,40 @@ git diff --check
 python -m compileall -q on_the_fly3r evaluation third_party_codes
 python -m pytest -q tests/test_refactor_baseline.py
 ```
+
+## Results
+
+<p align="center">
+  <img src="assets/pinotcloud_compare.jpg" alt="Point-cloud reconstruction comparison" width="100%">
+</p>
+
+Qualitative point-cloud reconstruction results on large-scale UAV scenes.
+
+## Citation
+
+The paper and BibTeX entry will be added upon release.
+
+## License
+
+The original components of On-the-Fly3R are released under the
+[Apache License 2.0](LICENSE). Third-party code, model implementations, and
+pretrained weights are subject to their respective licenses and terms of use.
+Redistributed VGGT and VGGT-Long-derived components remain subject to the
+[official VGGT License](https://github.com/facebookresearch/vggt/blob/main/LICENSE.txt).
+
+## Acknowledgements
+
+Our robust Sim(3) estimation is adapted from
+[VGGT-Long](https://github.com/DengKaiCQ/VGGT-Long). We sincerely thank its
+authors for releasing their implementation.
+
+On-the-Fly3R supports multiple feed-forward 3R models, including
+[Pi3/Pi3X](https://github.com/yyfz/Pi3),
+[VGGT](https://github.com/facebookresearch/vggt),
+[VGGT-Omega](https://github.com/facebookresearch/vggt-omega), and
+[MapAnything](https://github.com/facebookresearch/map-anything). Image
+retrieval is built upon [SupScene](https://github.com/Suxilan/SupScene).
+
+We thank the authors of these projects for making their work publicly
+available. All third-party code and pretrained models remain subject to their
+respective licenses and terms of use.

@@ -50,7 +50,10 @@
 # Local notes, conversion helpers, and old figures kept off GitHub
 /docs/
 /dataset/
-/assets/
+/assets/*
+!/assets/On-the-Fly3R_overview.jpg
+!/assets/pipeline.jpg
+!/assets/pinotcloud_compare.jpg
 
 # Datasets, logs, and generated reconstruction outputs
 /Data/

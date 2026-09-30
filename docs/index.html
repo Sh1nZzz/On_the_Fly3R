@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="On-the-Fly3R is a training-free progressive framework for robust online 3D reconstruction from large-scale, unordered UAV imagery."
+    />
+    <meta name="theme-color" content="#f6f8f7" />
+    <meta property="og:title" content="On-the-Fly3R" />
+    <meta
+      property="og:description"
+      content="Robust online 3D reconstruction with feed-forward 3R models for large-scale UAV scenarios."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="assets/images/overview.webp" />
+    <title>On-the-Fly3R</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="script.js" defer></script>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header" id="top">
+      <div class="nav-shell">
+        <a class="wordmark" href="#top" aria-label="On-the-Fly3R home">
+          <span class="wordmark-mark" aria-hidden="true"></span>
+          On-the-Fly3R
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="#abstract">Abstract</a>
+          <a href="#method">Method</a>
+          <a href="#results">Results</a>
+          <a href="#citation">Citation</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero section-shell">
+        <div class="eyebrow"><span></span> Large-scale UAV reconstruction</div>
+        <h1>On-the-Fly3R</h1>
+        <p class="subtitle">
+          Towards Robust Online 3D Reconstruction with Feed-Forward 3R Models
+          for Large-Scale UAV Scenarios
+        </p>
+
+        <div class="authors" aria-label="Authors">
+          <span>Zhe Shen<sup>*</sup></span>
+          <span>Liyuan Lou<sup>*</sup></span>
+          <span>Yifei Yu</span>
+          <span>Guanbo Wang</span>
+          <span>Quanjian Ji</span>
+          <span>Xin Wang<sup>†</sup></span>
+          <span>Zongqian Zhan<sup>†</sup></span>
+        </div>
+        <p class="affiliation">
+          School of Geodesy and Geomatics, Wuhan University<br />
+          <span><sup>*</sup> Equal contribution &nbsp; <sup>†</sup> Corresponding authors</span>
+        </p>
+
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://arxiv.org/abs/2609.00923" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h9l5 5v15H6V2Zm8 2v4h4m-9 5h8m-8 4h6" /></svg>
+            Paper
+          </a>
+          <a class="button" href="https://github.com/Sh1nZzz/On_the_Fly3R" target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18c-4.5 1.4-4.5-2.3-6.3-2.8M15.3 21v-3.5c0-1 .1-1.6-.5-2.2 2.8-.3 5.7-1.4 5.7-6.2A4.8 4.8 0 0 0 19.2 5 4.5 4.5 0 0 0 19 1s-1 .3-4.2 1.6a14.4 14.4 0 0 0-7.6 0C4 1.3 3 1 3 1a4.5 4.5 0 0 0-.2 4A4.8 4.8 0 0 0 1.5 9c0 4.8 2.9 5.9 5.7 6.2-.5.5-.6 1-.6 2.2V21" /></svg>
+            Code
+          </a>
+          <a class="button" href="#citation">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17h3V9H5v5h2v3Zm10 0h3V9h-5v5h2v3Z" /></svg>
+            BibTeX
+          </a>
+        </div>
+
+        <p class="hero-summary">
+          A training-free progressive framework that scales feed-forward 3D
+          reconstruction models to large-scale, unordered or weakly ordered UAV imagery.
+        </p>
+      </section>
+
+      <section class="overview section-shell" aria-label="Overview">
+        <figure class="media-frame overview-frame">
+          <img
+            src="assets/images/overview.webp"
+            width="2400"
+            height="973"
+            alt="On-the-Fly3R reconstruction compared with LiDAR and scalable 3R baselines, with an accuracy, runtime, and VRAM chart."
+          />
+          <figcaption>
+            On-the-Fly3R reconstructs large UAV scenes with strong global consistency
+            while retaining a bounded memory footprint.
+          </figcaption>
+        </figure>
+      </section>
+
+      <section class="metrics section-shell" aria-label="Key results">
+        <article><strong>5,871</strong><span>images in the largest scene</span></article>
+        <article><strong>1 km²+</strong><span>large-scale UAV mapping</span></article>
+        <article><strong>95.39%</strong><span>pose coverage with Pi3x</span></article>
+        <article><strong>9.9 GB</strong><span>peak VRAM with VGGT-Omega</span></article>
+      </section>
+
+      <section class="content-section section-shell" id="abstract">
+        <div class="section-heading">
+          <span>01 / Abstract</span>
+          <h2>Abstract</h2>
+        </div>
+        <div class="abstract-copy">
+          <p>
+            While feed-forward 3D reconstruction (3R) offers efficient end-to-end
+            modeling, its application in large-scale UAV mapping is hindered by the
+            prohibitive memory cost of Transformer attention. Current scalable streaming
+            3R methods assume temporally and spatially continuous inputs, rendering them
+            ineffective for the weakly ordered or unordered image streams common in
+            cross-strip UAV operations.
+          </p>
+          <p>
+            To address this, we propose On-the-Fly3R, a training-free, progressive online
+            3D reconstruction framework for large-scale UAV images that upgrades various
+            3R backbones for large-scale UAV scenarios. Our method enables reconstruction
+            from unordered inputs via retrieval-guided dynamic subset construction, which
+            adaptively selects spatially relevant images. To further improve the
+            robustness, a validation–rejection–retry mechanism is designed to guarantee
+            global consistency, performing a pre-integration consistency check and
+            automatically rejecting misaligned images and retrying with an alternative
+            subset. Finally, inspired by VSLAM, pose graph optimization based on the
+            retrieval loop closure is employed to mitigate camera drift.
+          </p>
+          <p>
+            Evaluations on several UAV benchmarks show that our On-the-Fly3R successfully
+            scales various 3R models to over 5,000 images across square-kilometer UAV
+            scenes, delivering substantially superior accuracy compared to several SOTA
+            scalable 3R methods.
+          </p>
+        </div>
+      </section>
+
+      <section class="content-section method-section" id="method">
+        <div class="section-shell">
+          <div class="method-kicker">
+            <span>02 / Method</span>
+          </div>
+
+          <figure class="media-frame method-frame">
+            <img
+              src="assets/images/pipeline.webp"
+              width="2400"
+              height="1142"
+              loading="lazy"
+              alt="Pipeline showing retrieval-guided dynamic subset construction, 3R inference, confidence-weighted Sim(3) alignment, validation and retry, and pose graph optimization."
+            />
+          </figure>
+
+          <div class="method-steps">
+            <article><span>01</span><h3>Retrieve</h3><p>Select co-visible references from the established global map.</p></article>
+            <article><span>02</span><h3>Reconstruct</h3><p>Run a frozen 3R model on a compact local subset.</p></article>
+            <article><span>03</span><h3>Validate & retry</h3><p>Check pose and scale consistency; prune unreliable references when needed.</p></article>
+            <article><span>04</span><h3>Optimize</h3><p>Use retrieval loop closures to reduce accumulated camera drift.</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="content-section section-shell" id="results">
+        <div class="section-heading results-heading">
+          <span>03 / Results</span>
+          <h2>Large scenes, consistent geometry</h2>
+          <p>
+            Qualitative comparisons on the weakly ordered GauU-SceneV2 benchmark.
+            Videos are synchronized rotations of the reconstructed point clouds.
+          </p>
+        </div>
+
+        <div class="video-grid">
+          <article class="video-card">
+            <div class="video-wrap">
+              <video muted loop playsinline preload="none" poster="assets/posters/HAV.webp" aria-label="HAV reconstruction comparison video">
+                <source data-src="assets/videos/HAV.mp4" type="video/mp4" />
+              </video>
+              <button class="video-toggle" type="button" aria-label="Pause HAV video">Pause</button>
+            </div>
+            <div class="video-meta"><div><h3>HAV</h3><p>Comparison across scalable 3R methods</p></div><span>424 images</span></div>
+          </article>
+
+          <article class="video-card">
+            <div class="video-wrap">
+              <video muted loop playsinline preload="none" poster="assets/posters/SMBU.webp" aria-label="SMBU reconstruction comparison video">
+                <source data-src="assets/videos/SMBU.mp4" type="video/mp4" />
+              </video>
+              <button class="video-toggle" type="button" aria-label="Pause SMBU video">Pause</button>
+            </div>
+            <div class="video-meta"><div><h3>SMBU</h3><p>LiDAR, MERG3R, and ours</p></div><span>563 images</span></div>
+          </article>
+
+          <article class="video-card">
+            <div class="video-wrap">
+              <video muted loop playsinline preload="none" poster="assets/posters/SZIT.webp" aria-label="SZIT reconstruction comparison video">
+                <source data-src="assets/videos/SZIT.mp4" type="video/mp4" />
+              </video>
+              <button class="video-toggle" type="button" aria-label="Pause SZIT video">Pause</button>
+            </div>
+            <div class="video-meta"><div><h3>SZIT</h3><p>LiDAR, MERG3R, and ours</p></div><span>1,215 images</span></div>
+          </article>
+
+          <article class="video-card">
+            <div class="video-wrap">
+              <video muted loop playsinline preload="none" poster="assets/posters/SZTU.webp" aria-label="SZTU reconstruction comparison video">
+                <source data-src="assets/videos/SZTU.mp4" type="video/mp4" />
+              </video>
+              <button class="video-toggle" type="button" aria-label="Pause SZTU video">Pause</button>
+            </div>
+            <div class="video-meta"><div><h3>SZTU</h3><p>LiDAR, MERG3R, and ours</p></div><span>1,500 images</span></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="evidence-section">
+        <div class="section-shell">
+          <div class="evidence-intro">
+            <div class="section-heading section-heading-light">
+              <span>04 / Results</span>
+              <h2>Results</h2>
+            </div>
+            <div class="result-callout">
+              <strong>18.56 <small>m</small></strong>
+              <p>Macro-average ATE on the common six-scene frame set with Pi3x.</p>
+            </div>
+            <div class="result-callout">
+              <strong>3.85 <small>m</small></strong>
+              <p>Mean Chamfer distance across six outdoor scenes with Pi3x.</p>
+            </div>
+          </div>
+
+          <div class="results-table-wrap">
+            <table class="results-table">
+              <caption>Dense reconstruction efficiency on six outdoor UAV scenes</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Method</th>
+                  <th scope="col">ATE (m) ↓</th>
+                  <th scope="col">CD (m) ↓</th>
+                  <th scope="col">Time (s/frame) ↓</th>
+                  <th scope="col">Peak VRAM (GB) ↓</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>LingBot-Map</td><td>210.88</td><td>18.07</td><td>0.382</td><td>18.40</td></tr>
+                <tr><td>Scal3R</td><td>144.30</td><td>25.54</td><td>2.272</td><td>14.38</td></tr>
+                <tr><td>VGGT-SLAM</td><td>172.38</td><td>13.44</td><td>1.602</td><td>21.46</td></tr>
+                <tr><td>VGGT-Long</td><td>192.20</td><td>18.97</td><td>2.328</td><td>19.87</td></tr>
+                <tr><td>MERG3R</td><td>126.49</td><td>16.41</td><td>0.959</td><td>16.36</td></tr>
+                <tr class="ours"><td>On-the-Fly3R (Pi3)</td><td>23.57</td><td>5.62</td><td>0.736</td><td><strong>9.90</strong></td></tr>
+                <tr class="ours"><td>On-the-Fly3R (Pi3x)</td><td><strong>18.56</strong></td><td><strong>3.85</strong></td><td>0.814</td><td>17.56</td></tr>
+                <tr class="ours"><td>On-the-Fly3R (VGGT-Omega)</td><td>36.19</td><td>4.85</td><td>0.723</td><td><strong>9.90</strong></td></tr>
+              </tbody>
+            </table>
+            <p class="table-note">
+              ATE is macro-averaged from the six reported outdoor scene results.
+              Point-cloud metrics and runtime are macro-averaged across completed scenes;
+              memory is the maximum recorded peak.
+            </p>
+          </div>
+
+          <figure class="media-frame comparison-frame">
+            <img
+              src="assets/images/pointcloud-comparison.webp"
+              width="2400"
+              height="1284"
+              loading="lazy"
+              alt="Dense point-cloud comparison of six reconstruction methods, On-the-Fly3R, and ground truth on four UAV scenes."
+            />
+            <figcaption>
+              Dense reconstruction comparison. On-the-Fly3R produces geometry that
+              remains visually close to the LiDAR ground truth across all four scenes.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="content-section section-shell citation-section" id="citation">
+        <div class="section-heading">
+          <span>05 / Citation</span>
+          <h2>If you find this work useful</h2>
+        </div>
+        <div class="citation-box">
+          <pre><code>@article{shen2026onthefly3r,
+  title   = {On-the-Fly3R: Towards Robust Online 3D Reconstruction
+             with Feed-Forward 3R Models for Large-Scale UAV Scenarios},
+  author  = {Shen, Zhe and Lou, Liyuan and Yu, Yifei and Wang, Guanbo
+             and Ji, Quanjian and Wang, Xin and Zhan, Zongqian},
+  journal = {arXiv preprint arXiv:2609.00923},
+  year    = {2026}
+}</code></pre>
+          <button class="copy-button" type="button">Copy BibTeX</button>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="section-shell footer-inner">
+        <p><strong>On-the-Fly3R</strong><br />School of Geodesy and Geomatics, Wuhan University</p>
+        <p>Training-free · Progressive · Model-agnostic</p>
+      </div>
+    </footer>
+  </body>
+</html>

@@ -3,7 +3,7 @@
 <h3 align="center">Towards Robust Online 3D Reconstruction with Feed-Forward 3R Models for Large-Scale UAV Scenarios</h3>
 
 <p align="center">
-  Project Page (Coming Soon) · <a href="https://arxiv.org/abs/2609.00923">Paper</a>
+  <a href="https://sh1nzzz.github.io/On_the_Fly3R/">Project Page</a> · <a href="https://arxiv.org/abs/2609.00923">Paper</a>
 </p>
 
 <p align="center">

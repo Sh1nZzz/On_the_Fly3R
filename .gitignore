@@ -48,7 +48,6 @@
 /*.xlsx
 
 # Local notes, conversion helpers, and old figures kept off GitHub
-/docs/
 /dataset/
 /assets/*
 !/assets/On-the-Fly3R_overview.jpg
